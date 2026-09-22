@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <script>
+    // Browser visitors go back to the landing page's install steps. This is a product choice, not security:
+    // real protection is Supabase Auth plus Row Level Security.
+    (function () {
+      var standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+      if (!standalone) location.replace('../#install');
+    })();
+  </script>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Upheld</title>
+  <meta name="theme-color" content="#2C5F6F">
+  <link rel="manifest" href="../manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="../icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Upheld">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600&family=Source+Serif+4:opsz,wght@8..60,700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --river: #2C5F6F;
+      --cream: #F3E4C8;
+      --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+      --sans: "Public Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--river);
+      color: var(--cream);
+      font: 17px/1.5 var(--sans);
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: env(safe-area-inset-top) max(20px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(20px, env(safe-area-inset-left));
+    }
+    img { width: 120px; height: 120px; border-radius: 26px; }
+    h1 { font: 700 44px/1.1 var(--serif); margin: 20px 0 10px; }
+    p { margin: 0; max-width: 26ch; opacity: .9; }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="../icons/icon-512.png" alt="">
+    <h1>Upheld</h1>
+    <p>Sign-in and your group's prayers are coming soon</p>
+  </main>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('../sw.js').catch(function () {});
+    }
+  </script>
+</body>
+</html>

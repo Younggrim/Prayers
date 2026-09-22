@@ -1,0 +1,25 @@
+# Real prayer data must never be committed (see CLAUDE.md hard rules).
+*.csv
+*.tsv
+*.xlsx
+data/
+exports/
+import/
+scripts/import*
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Supabase CLI local state
+supabase/.temp/
+supabase/.branches/
+supabase/.env
+
+# Tooling
+node_modules/
+.DS_Store
+Thumbs.db
