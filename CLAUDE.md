@@ -32,7 +32,7 @@ Browser visitors only see this page. If opened from the home screen (display-mod
 4. Four features: Prayer time on a timer; Request a prayer; Private groups with approvers; Answered prayer (one or two sentences each, based on Features below).
 5. Install (id="install"): "Prayer lists open only in the app, not in a web browser. Add it to your home screen, open it from there, and sign in to join your group." iPhone steps (Safari, Share, Add to Home Screen, open from home screen) and Android steps (Chrome, menu, Install app, open from home screen). An "Install Upheld" button shown only when beforeinstallprompt fires.
 6. Privacy: "Your group's requests stay in your group" with a short note that every group is private, members are approved, and prayers are only shown to signed-in members.
-7. Footer: "Upheld. Made for the men of New River Church and any group that prays together."
+7. Footer: "Upheld. Made for any small group that prays together."
 
 app/index.html: if not standalone, redirect to ../#install. Otherwise show the icon, "Upheld", and "Sign-in and your group's prayers are coming soon" until sign-in is built.
 
