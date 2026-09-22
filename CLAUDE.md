@@ -1,6 +1,6 @@
 # Upheld
 
-A private prayer app for small groups, built first for the New River Church (Clover, SC) Friday morning men's group. Named for Exodus 17:12: Aaron and Hur held up Moses' hands until sunset.
+A private prayer app for small groups. Named for Exodus 17:12: Aaron and Hur held up Moses' hands until sunset.
 
 Owner: Jeremy McAdoo. Repo: Younggrim/Prayers. Live site: https://upheld.macdwellings.com (GitHub Pages, custom domain via CNAME).
 
@@ -28,11 +28,11 @@ Browser visitors only see this page. If opened from the home screen (display-mod
 
 1. Hero on #2C5F6F with cream text: "Upheld" (large serif), lede "A private prayer app for small groups. Keep your prayer lists in one place, pray through them together, and never let a request get lost.", amber button "Add Upheld to your phone" linking to #install, and the icon scene as a large inline illustration with its hill blending into the next band.
 2. Verse band on #1E4450: "But Moses' hands were heavy… and Aaron and Hur stayed up his hands, the one on the one side, and the other on the other side; and his hands were steady until the going down of the sun." Exodus 17:12 (KJV).
-3. Heading "Nobody should have to hold their arms up alone" with: "Upheld started with a men's prayer group that kept its requests on a slide deck that grew longer every week. Upheld gives a group one shared list that stays current, a simple way to pray through it, and a place to celebrate the prayers God answers."
+3. Heading "Nobody should have to hold their arms up alone" with: "Upheld started with a small prayer group that kept its requests on a slide deck that grew longer every week. Upheld gives a group one shared list that stays current, a simple way to pray through it, and a place to celebrate the prayers God answers."
 4. Four features: Prayer time on a timer; Request a prayer; Private groups with approvers; Answered prayer (one or two sentences each, based on Features below).
 5. Install (id="install"): "Prayer lists open only in the app, not in a web browser. Add it to your home screen, open it from there, and sign in to join your group." iPhone steps (Safari, Share, Add to Home Screen, open from home screen) and Android steps (Chrome, menu, Install app, open from home screen). An "Install Upheld" button shown only when beforeinstallprompt fires.
 6. Privacy: "Your group's requests stay in your group" with a short note that every group is private, members are approved, and prayers are only shown to signed-in members.
-7. Footer: "Upheld. Made for the men of New River Church and any group that prays together."
+7. Footer: "Upheld. Made for any small group that prays together."
 
 app/index.html: if not standalone, redirect to ../#install. Otherwise show the icon, "Upheld", and "Sign-in and your group's prayers are coming soon" until sign-in is built.
 
@@ -40,7 +40,7 @@ app/index.html: if not standalone, redirect to ../#install. Otherwise show the i
 
 - Hosting: GitHub Pages (static).
 - Backend: Supabase (Postgres, Auth, Row Level Security, Edge Functions).
-- Sign-in: email magic link (no passwords).
+- Sign-in: passwordless email with a 6-digit code (Supabase email OTP: signInWithOtp, then verifyOtp with type 'email'). The person types the code into the app. Don't rely on tapping the link: on iPhone, home-screen apps don't share storage with Safari, so a link would sign them in to Safari instead of the app. The Magic Link email template must include {{ .Token }}.
 - Prayer writing: "Request a prayer" drafts a prayer from who + need via a Supabase Edge Function (keys stay server-side). If unavailable, use the template in Prayer style.
 
 ## Roles
