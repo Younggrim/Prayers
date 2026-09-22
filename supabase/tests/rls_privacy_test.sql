@@ -19,6 +19,7 @@
 \set ON_ERROR_STOP on
 \set QUIET on
 \pset footer off
+\pset pager off
 \o /dev/null
 
 begin;
@@ -242,6 +243,52 @@ select pg_temp.expect_blocked('signed-out visitor cannot read groups',
   'select count(*) from public.groups');
 select pg_temp.expect_blocked('signed-out visitor cannot join a group',
   $q$select * from public.join_group('ANYCODE1')$q$);
+reset role;
+
+-- ---------------------------------------------------------------------------
+-- my_groups() and group_roster()
+-- ---------------------------------------------------------------------------
+
+select pg_temp.act_as('pending');
+select pg_temp.expect_count('a pending member sees their own pending group in my_groups()',
+  format($q$select count(*) from public.my_groups() where group_id = %L and status = 'pending' and name = 'Sample Group'$q$,
+         pg_temp.id('group')), 1);
+select pg_temp.expect_count('a pending member does not get the invite code or settings',
+  format($q$select count(*) from public.my_groups() where group_id = %L and (invite_code is not null or require_approval is not null)$q$,
+         pg_temp.id('group')), 0);
+select pg_temp.expect_count('a pending member cannot read the roster',
+  format('select count(*) from public.group_roster(%L)', pg_temp.id('group')), 0);
+reset role;
+
+select pg_temp.act_as('member');
+select pg_temp.expect_count('a member does not get the invite code',
+  format($q$select count(*) from public.my_groups() where group_id = %L and invite_code is not null$q$, pg_temp.id('group')), 0);
+select pg_temp.expect_count('a member''s roster shows only active people',
+  format($q$select count(*) from public.group_roster(%L) where status = 'pending'$q$, pg_temp.id('group')), 0);
+select pg_temp.expect_count('a member''s roster shows the four active people',
+  format('select count(*) from public.group_roster(%L)', pg_temp.id('group')), 4);
+reset role;
+
+select pg_temp.act_as('approver');
+select pg_temp.expect_count('an approver gets the invite code',
+  format($q$select count(*) from public.my_groups() where group_id = %L and invite_code is not null$q$, pg_temp.id('group')), 1);
+select pg_temp.expect_count('an approver''s roster includes pending join requests with names',
+  format($q$select count(*) from public.group_roster(%L) where status = 'pending' and display_name = 'Sample Pending'$q$,
+         pg_temp.id('group')), 1);
+reset role;
+
+select pg_temp.act_as('outsider');
+select pg_temp.expect_count('a non-member sees no groups in my_groups()',
+  'select count(*) from public.my_groups()', 0);
+select pg_temp.expect_count('a non-member cannot read the roster',
+  format('select count(*) from public.group_roster(%L)', pg_temp.id('group')), 0);
+reset role;
+
+select pg_temp.act_as('anon');
+select pg_temp.expect_blocked('a signed-out visitor cannot call my_groups()',
+  'select count(*) from public.my_groups()');
+select pg_temp.expect_blocked('a signed-out visitor cannot call group_roster()',
+  format('select count(*) from public.group_roster(%L)', pg_temp.id('group')));
 reset role;
 
 -- ---------------------------------------------------------------------------

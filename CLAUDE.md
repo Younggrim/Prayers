@@ -15,12 +15,13 @@ Owner: Jeremy McAdoo. Repo: Younggrim/Prayers. Live site: https://upheld.macdwel
 ## Structure
 
     index.html              Landing page: description, verse, features, install steps, privacy
-    app/index.html          The installed app
+    app/index.html          The installed app (shell); app/app.js (logic), app/app.css, app/config.js (Supabase URL + publishable key)
     manifest.webmanifest    PWA manifest: name Upheld, start_url ./app/, scope ./, display standalone, background and theme #2C5F6F, icons 192, 512, maskable 512
     sw.js                   Service worker: network-first, caches only same-origin GET requests (never API or auth traffic)
     icons/                  App icons and SVG source
     CNAME                   upheld.macdwellings.com
-    supabase/migrations/    SQL migrations
+    supabase/migrations/    SQL migrations (apply with: supabase db push)
+    supabase/tests/         RLS privacy tests (rls_privacy_test.sql); scripts/test-rls-local.sh runs them on a throwaway Postgres
 
 ## Landing page
 
@@ -34,13 +35,14 @@ Browser visitors only see this page. If opened from the home screen (display-mod
 6. Privacy: "Your group's requests stay in your group" with a short note that every group is private, members are approved, and prayers are only shown to signed-in members.
 7. Footer: "Upheld. Made for any small group that prays together."
 
-app/index.html: if not standalone, redirect to ../#install. Otherwise show the icon, "Upheld", and "Sign-in and your group's prayers are coming soon" until sign-in is built.
+app/index.html: if not standalone, redirect to ../#install. Otherwise run the app (app/app.js).
 
 ## Stack
 
 - Hosting: GitHub Pages (static).
-- Backend: Supabase (Postgres, Auth, Row Level Security, Edge Functions).
-- Sign-in: passwordless email with a 6-digit code (Supabase email OTP: signInWithOtp, then verifyOtp with type 'email'). The person types the code into the app. Don't rely on tapping the link: on iPhone, home-screen apps don't share storage with Safari, so a link would sign them in to Safari instead of the app. The Magic Link email template must include {{ .Token }}.
+- Backend: Supabase (Postgres, Auth, Row Level Security, Edge Functions). Project "upheld", ref vyiznjphjwehawdzapce, free plan, West US (Oregon). URL and publishable key live in app/config.js.
+- Client library: @supabase/supabase-js 2.117.0 UMD from jsDelivr, pinned with an SRI hash in app/index.html. When upgrading, update the version and the integrity hash together.
+- Sign-in: passwordless email with a 6-digit code (Supabase email OTP: signInWithOtp, then verifyOtp with type 'email'). The person types the code into the app. Don't rely on tapping the link: on iPhone, home-screen apps don't share storage with Safari, so a link would sign them in to Safari instead of the app. The Magic Link email template must include {{ .Token }}. After sign-in, people set a display name (profiles.display_name) before joining a group. Supabase's built-in email only reaches the project's own team members and is heavily rate-limited, so custom SMTP must be set up before inviting a group.
 - Prayer writing: "Request a prayer" drafts a prayer from who + need via a Supabase Edge Function (keys stay server-side). If unavailable, use the template in Prayer style.
 
 ## Roles
@@ -71,6 +73,16 @@ RLS:
 - Joining: a user with a valid invite_code inserts a pending membership; approvers/owner activate it.
 - Users insert and delete only their own prayed_marks.
 
+Server functions (SECURITY DEFINER, signed-in users only):
+
+- create_group(name, description): creates the group; caller becomes its active owner.
+- join_group(invite_code): creates a pending membership; returns only the group's id, name, and the caller's status.
+- rotate_invite_code(group_id): owner only.
+- my_groups(): the caller's groups, including pending ones (name and status only). Invite codes go only to approvers/owner.
+- group_roster(group_id): names, roles, and statuses. Members see active people; approvers/owner also see pending join requests.
+
+Triggers enforce what policies can't: only the owner changes roles (never to or from owner); memberships only move pending -> active; approved_by and answered_at are stamped automatically; prayers can't move between groups. The owner can't leave their own group.
+
 ## Features
 
 1. Lists by tab: All, each list, and Praise. Tap a prayer to open its full text and tap "I prayed". Show "Prayed 3x" totals.
@@ -80,6 +92,13 @@ RLS:
 5. Answered prayer: approvers move a prayer to Praise; it leaves prayer time but stays in the Praise tab.
 
 Build order: auth + groups/invites, then lists/prayers, then prayer time, then requests + approvals, then praise.
+
+## Status
+
+- Phase 1 (repo, landing page, Pages, DNS): done.
+- Phase 2 (Supabase schema, RLS, privacy tests): done. Tests pass against the live project.
+- Phase 3 (sign-in, create/join group, approver queue for members, owner role management, require-approval setting): built in app/app.js.
+- Next: Phase 4 (lists and prayer time), Phase 5 (requests, approvals, praise), Phase 6 (one-time import of the group's lists; script and data never committed).
 
 ## Prayer style
 
