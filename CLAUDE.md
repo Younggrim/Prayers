@@ -1,6 +1,6 @@
 # Upheld
 
-A private prayer app for small groups, built first for the New River Church (Clover, SC) Friday morning men's group. Named for Exodus 17:12: Aaron and Hur held up Moses' hands until sunset.
+A private prayer app for small groups. Named for Exodus 17:12: Aaron and Hur held up Moses' hands until sunset.
 
 Owner: Jeremy McAdoo. Repo: Younggrim/Prayers. Live site: https://upheld.macdwellings.com (GitHub Pages, custom domain via CNAME).
 
@@ -40,7 +40,7 @@ app/index.html: if not standalone, redirect to ../#install. Otherwise show the i
 
 - Hosting: GitHub Pages (static).
 - Backend: Supabase (Postgres, Auth, Row Level Security, Edge Functions).
-- Sign-in: email magic link (no passwords).
+- Sign-in: passwordless email with a 6-digit code (Supabase email OTP: signInWithOtp, then verifyOtp with type 'email'). The person types the code into the app. Don't rely on tapping the link: on iPhone, home-screen apps don't share storage with Safari, so a link would sign them in to Safari instead of the app. The Magic Link email template must include {{ .Token }}.
 - Prayer writing: "Request a prayer" drafts a prayer from who + need via a Supabase Edge Function (keys stay server-side). If unavailable, use the template in Prayer style.
 
 ## Roles
