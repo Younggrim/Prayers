@@ -397,6 +397,24 @@ select pg_temp.expect_blocked('a member cannot delete someone else''s mark',
   format('delete from public.prayed_marks where prayer_id = %L', pg_temp.id('pending_prayer')));
 reset role;
 
+select pg_temp.act_as('member2');
+select pg_temp.expect_count('prayed_totals() gives members the group total',
+  format('select coalesce(sum(total), 0) from public.prayed_totals(%L) where prayer_id = %L',
+         pg_temp.id('group'), pg_temp.id('pending_prayer')), 2);
+select pg_temp.expect_count('prayed_totals() counts only the caller''s own marks as "mine"',
+  format('select coalesce(sum(mine), 0) from public.prayed_totals(%L)', pg_temp.id('group')), 0);
+reset role;
+
+select pg_temp.act_as('outsider');
+select pg_temp.expect_count('prayed_totals() gives non-members nothing',
+  format('select count(*) from public.prayed_totals(%L)', pg_temp.id('group')), 0);
+reset role;
+
+select pg_temp.act_as('anon');
+select pg_temp.expect_blocked('a signed-out visitor cannot call prayed_totals()',
+  format('select count(*) from public.prayed_totals(%L)', pg_temp.id('group')));
+reset role;
+
 select pg_temp.act_as('outsider');
 select pg_temp.expect_count('non-members cannot see prayed marks',
   format('select count(*) from public.prayed_marks where prayer_id = %L', pg_temp.id('pending_prayer')), 0);

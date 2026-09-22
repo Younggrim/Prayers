@@ -78,6 +78,7 @@ Server functions (SECURITY DEFINER, signed-in users only):
 - create_group(name, description): creates the group; caller becomes its active owner.
 - join_group(invite_code): creates a pending membership; returns only the group's id, name, and the caller's status.
 - rotate_invite_code(group_id): owner only.
+- prayed_totals(group_id): per-prayer "Prayed Nx" totals (group total and the caller's own) for active/answered prayers; active members only.
 - my_groups(): the caller's groups, including pending ones (name and status only). Invite codes go only to approvers/owner.
 - group_roster(group_id): names, roles, and statuses. Members see active people; approvers/owner also see pending join requests.
 
@@ -98,7 +99,9 @@ Build order: auth + groups/invites, then lists/prayers, then prayer time, then r
 - Phase 1 (repo, landing page, Pages, DNS): done.
 - Phase 2 (Supabase schema, RLS, privacy tests): done. Tests pass against the live project.
 - Phase 3 (sign-in, create/join group, approver queue for members, owner role management, require-approval setting): built in app/app.js.
-- Next: Phase 4 (lists and prayer time), Phase 5 (requests, approvals, praise), Phase 6 (one-time import of the group's lists; script and data never committed).
+- Phase 4 (lists view with All / each list / Praise tabs, prayer detail with "I prayed", "Prayed Nx" totals, prayer time): built in app/app.js.
+  Prayer time details: lists order by prayers.created_at (oldest first); Praise orders by answered_at (newest first). Advancing marks the card being left as prayed; when time runs out the card on screen also counts; ending early doesn't count the card on screen. After the whole stack is prayed it reshuffles and continues. Chime is Web Audio (G5 then C5), unlocked on the Begin tap for iOS. Screen Wake Lock is held while running and re-requested when the app returns to the foreground.
+- Next: Phase 5 (requests, approvals, praise), Phase 6 (one-time import of the group's lists; script and data never committed).
 
 ## Prayer style
 

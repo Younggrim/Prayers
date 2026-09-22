@@ -104,6 +104,7 @@
 
   function render(node) {
     closeSheet();
+    state.view = 'other';
     $app.replaceChildren(node);
     var focusTarget = $app.querySelector('[data-autofocus]') || $app.querySelector('h1, h2');
     if (focusTarget) {
@@ -439,6 +440,7 @@
         state.groups.length > 1 ? h('button', { class: 'btn quiet', type: 'button', text: 'Switch group', onclick: openGroupSheet }) : null,
         h('button', { class: 'btn quiet', type: 'button', text: 'Join a different group', onclick: showStart }),
         h('button', { class: 'btn quiet', type: 'button', text: 'Sign out', onclick: signOut }))));
+    state.view = 'pending';
   }
 
   // ---------------------------------------------------------------------------
@@ -470,6 +472,7 @@
           h('span', { text: g.name }), svg(ICONS.chevron))));
 
     render(h('div', { style: 'display:contents' }, topbar, content, tabbar));
+    state.view = 'group';
 
     if (state.tab === 'people') renderPeople(g, content);
     else if (state.tab === 'group') renderGroupSettings(g, content);
@@ -495,12 +498,413 @@
     }).catch(function () {});
   }
 
+  // ---------------------------------------------------------------------------
+  // Prayers tab: list tabs (All, each list, Praise), prayer detail, "I prayed"
+  // ---------------------------------------------------------------------------
+
+  // Cache of the current group's lists, prayers, and totals, refreshed each time the tab opens.
+  var pdata = { groupId: null, lists: [], prayers: [], totals: {} };
+  var listTab = store.get('listTab') || 'all';
+
+  function loadPrayerData(g) {
+    return Promise.all([
+      sb.from('lists').select('id, name, sort_order').eq('group_id', g.group_id)
+        .order('sort_order', { ascending: true }).order('name', { ascending: true }).then(must),
+      sb.from('prayers').select('id, list_id, title, body, status, created_at, answered_at')
+        .eq('group_id', g.group_id).in('status', ['active', 'answered'])
+        .order('created_at', { ascending: true }).then(must),
+      sb.rpc('prayed_totals', { p_group_id: g.group_id }).then(must)
+    ]).then(function (r) {
+      var totals = {};
+      (r[2] || []).forEach(function (t) { totals[t.prayer_id] = { total: Number(t.total), mine: Number(t.mine) }; });
+      pdata = { groupId: g.group_id, lists: r[0] || [], prayers: r[1] || [], totals: totals };
+      return pdata;
+    });
+  }
+
+  function listName(id) {
+    for (var i = 0; i < pdata.lists.length; i++) if (pdata.lists[i].id === id) return pdata.lists[i].name;
+    return '';
+  }
+  function totalFor(id) { return (pdata.totals[id] && pdata.totals[id].total) || 0; }
+  function prayedLabel(n) { return n ? 'Prayed ' + n + 'x' : 'Not prayed yet'; }
+
   function renderPrayers(g, el) {
-    el.replaceChildren(
-      h('div', { class: 'card coming' },
+    el.replaceChildren(h('p', { class: 'empty', text: 'Loading…' }));
+    loadPrayerData(g).then(function () {
+      if (currentGroup() !== g || state.tab !== 'prayers') return;
+      drawPrayers(g, el);
+    }).catch(function (err) {
+      el.replaceChildren(h('p', { class: 'error', text: friendlyError(err) }),
+        h('button', { class: 'btn secondary', type: 'button', text: 'Try again', onclick: function () { renderPrayers(g, el); } }));
+    });
+  }
+
+  function drawPrayers(g, el) {
+    var tabs = [{ id: 'all', name: 'All' }]
+      .concat(pdata.lists.map(function (l) { return { id: l.id, name: l.name }; }))
+      .concat([{ id: 'praise', name: 'Praise' }]);
+    if (!tabs.some(function (t) { return t.id === listTab; })) listTab = 'all';
+
+    var active = pdata.prayers.filter(function (p) { return p.status === 'active'; });
+    var shown;
+    if (listTab === 'praise') {
+      shown = pdata.prayers.filter(function (p) { return p.status === 'answered'; })
+        .sort(function (a, b) { return String(b.answered_at || '').localeCompare(String(a.answered_at || '')); });
+    } else if (listTab === 'all') {
+      shown = active;
+    } else {
+      shown = active.filter(function (p) { return p.list_id === listTab; });
+    }
+
+    var tablist = h('div', { class: 'chips', role: 'tablist', 'aria-label': 'Prayer lists' },
+      tabs.map(function (t) {
+        return h('button', {
+          class: 'chip' + (t.id === 'praise' ? ' praise' : ''), type: 'button', role: 'tab',
+          'aria-selected': t.id === listTab ? 'true' : 'false',
+          onclick: function () { listTab = t.id; store.set('listTab', t.id); drawPrayers(g, el); }
+        }, t.name);
+      }));
+
+    var start = h('button', { class: 'btn block pt-start', type: 'button', onclick: function () { showPrayerSetup(g); } },
+      svg('M12 6v6l4 2|M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20'), 'Start prayer time');
+
+    var body;
+    if (!shown.length) {
+      var msg = listTab === 'praise'
+        ? 'When an approver marks a prayer answered, it moves here so the group can give thanks.'
+        : pdata.prayers.length ? 'No prayers in this list right now.' : 'Your group has no prayers yet. Requests will show up here once they\'re approved.';
+      body = h('div', { class: 'card empty-state' }, h('p', { text: msg }));
+    } else {
+      body = h('ul', { class: 'prayers' }, shown.map(function (p) {
+        var n = totalFor(p.id);
+        return h('li', {},
+          h('button', { class: 'prayer-item', type: 'button', onclick: function () { showPrayer(g, p); } },
+            h('span', { class: 'prayer-title', text: p.title }),
+            p.body ? h('span', { class: 'prayer-snippet', text: snippet(p.body) }) : null,
+            h('span', { class: 'prayer-meta' },
+              listTab === 'all' || listTab === 'praise' ? (listName(p.list_id) ? h('span', { text: listName(p.list_id) }) : null) : null,
+              listTab === 'praise' && p.answered_at ? h('span', { text: 'Answered ' + shortDate(p.answered_at) }) : null,
+              h('span', { class: 'count', text: prayedLabel(n) }))));
+      }));
+    }
+
+    el.replaceChildren(active.length ? start : null, tablist, body);
+    var sel = tablist.querySelector('[aria-selected="true"]');
+    if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  // First meaningful line of the prayer, skipping the "Heavenly Father," greeting.
+  function snippet(body) {
+    var lines = String(body).split(/\n+/).map(function (s) { return s.trim(); }).filter(Boolean);
+    var line = lines.filter(function (s) { return !/^(heavenly father|dear (lord|god|father)|father|lord)[,.!]?$/i.test(s); })[0] || lines[0] || '';
+    return line.length > 120 ? line.slice(0, 117).replace(/\s+\S*$/, '') + '…' : line;
+  }
+  function shortDate(iso) {
+    try { return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); } catch (e) { return ''; }
+  }
+
+  function markPrayed(p) {
+    return sb.from('prayed_marks').insert({ prayer_id: p.id, user_id: state.user.id }).then(must).then(function () {
+      var t = pdata.totals[p.id] || (pdata.totals[p.id] = { total: 0, mine: 0 });
+      t.total += 1;
+      t.mine += 1;
+      return t;
+    });
+  }
+
+  // Full text of one prayer, with "I prayed".
+  function showPrayer(g, p) {
+    var count = h('p', { class: 'prayer-count', 'aria-live': 'polite' });
+    function drawCount() {
+      var c = pdata.totals[p.id] || { total: 0, mine: 0 };
+      count.textContent = prayedLabel(c.total) + (c.mine ? ' · you ' + c.mine + 'x' : '');
+    }
+    drawCount();
+    var err = h('p', { class: 'error', role: 'alert' });
+    var prayed = null;
+    if (p.status === 'active') {
+      prayed = h('button', { class: 'btn block', type: 'button', text: 'I prayed' });
+      prayed.addEventListener('click', busy(prayed, err, function () {
+        return markPrayed(p).then(function () { drawCount(); toast('Amen. Thank you for praying.'); });
+      }));
+    }
+    var back = h('button', { class: 'btn quiet back', type: 'button', onclick: function () { showGroup(g); } },
+      svg('M15 18l-6-6 6-6'), 'Back');
+
+    render(h('div', { class: 'reader' },
+      h('header', { class: 'reader-bar' }, back),
+      h('main', { class: 'reader-body' },
+        h('p', { class: 'reader-list', text: p.status === 'answered' ? 'Praise' + (listName(p.list_id) ? ' · ' + listName(p.list_id) : '') : listName(p.list_id) }),
+        h('h1', { text: p.title }),
+        p.status === 'answered' && p.answered_at ? h('p', { class: 'reader-answered', text: 'Answered ' + shortDate(p.answered_at) }) : null,
+        h('div', { class: 'prayer-text', text: p.body || '' }),
+        count,
+        prayed,
+        err)));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Prayer time: choose length and lists, shuffle, one card at a time, countdown ring
+  // ---------------------------------------------------------------------------
+
+  var LENGTHS = [3, 5, 10, 15, 20, 30];
+
+  function showPrayerSetup(g) {
+    var minutes = Number(store.get('ptMinutes')) || 10;
+    if (LENGTHS.indexOf(minutes) < 0) minutes = 10;
+    var active = pdata.prayers.filter(function (p) { return p.status === 'active'; });
+    var lists = pdata.lists.filter(function (l) { return active.some(function (p) { return p.list_id === l.id; }); });
+    var unlisted = active.filter(function (p) { return !p.list_id || !listName(p.list_id); }).length;
+    var saved = (store.get('ptLists:' + g.group_id) || '').split(',').filter(Boolean);
+
+    var lengthGroup = h('div', { class: 'chips wrap', role: 'radiogroup', 'aria-labelledby': 'pt-len' },
+      LENGTHS.map(function (m) {
+        var b = h('button', {
+          class: 'chip', type: 'button', role: 'radio', 'aria-checked': m === minutes ? 'true' : 'false',
+          onclick: function () {
+            minutes = m;
+            lengthGroup.querySelectorAll('[role="radio"]').forEach(function (x) { x.setAttribute('aria-checked', 'false'); });
+            b.setAttribute('aria-checked', 'true');
+          }
+        }, m + ' min');
+        return b;
+      }));
+
+    var boxes = lists.map(function (l) {
+      var n = active.filter(function (p) { return p.list_id === l.id; }).length;
+      var cb = h('input', { type: 'checkbox', value: l.id, checked: !saved.length || saved.indexOf(l.id) >= 0 });
+      return h('label', { class: 'check-row' }, cb, h('span', { class: 'check-name', text: l.name }), h('span', { class: 'person-meta', text: String(n) }));
+    });
+    var otherBox = null;
+    if (unlisted) {
+      var ocb = h('input', { type: 'checkbox', value: '_none', checked: !saved.length || saved.indexOf('_none') >= 0 });
+      otherBox = h('label', { class: 'check-row' }, ocb, h('span', { class: 'check-name', text: lists.length ? 'Other' : 'All prayers' }), h('span', { class: 'person-meta', text: String(unlisted) }));
+    }
+
+    var err = h('p', { class: 'error', role: 'alert' });
+    var begin = h('button', { class: 'btn block', type: 'button', text: 'Begin' });
+    begin.addEventListener('click', function () {
+      var chosen = Array.prototype.map.call(document.querySelectorAll('.check-row input:checked'), function (x) { return x.value; });
+      var stack = active.filter(function (p) {
+        var key = p.list_id && listName(p.list_id) ? p.list_id : '_none';
+        return chosen.indexOf(key) >= 0;
+      });
+      if (!stack.length) { err.textContent = 'Choose at least one list.'; return; }
+      store.set('ptMinutes', String(minutes));
+      store.set('ptLists:' + g.group_id, chosen.join(','));
+      startPrayerTime(g, minutes, stack);
+    });
+
+    render(h('div', { class: 'reader' },
+      h('header', { class: 'reader-bar' },
+        h('button', { class: 'btn quiet back', type: 'button', onclick: function () { showGroup(g); } }, svg('M15 18l-6-6 6-6'), 'Back')),
+      h('main', { class: 'reader-body' },
+        h('h1', { text: 'Prayer time' }),
+        h('p', { class: 'lede', text: 'Upheld shuffles your prayers into one stack and shows one at a time. Tap to move to the next.' }),
+        h('h2', { class: 'section-title', id: 'pt-len', text: 'How long' }),
+        lengthGroup,
+        h('h2', { class: 'section-title', text: 'Which lists' }),
+        h('div', { class: 'card checks' }, boxes, otherBox),
+        begin,
+        err)));
+  }
+
+  function shuffle(a) {
+    a = a.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+
+  // Soft two-note chime made with Web Audio (no audio files).
+  function makeChime() {
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return { unlock: function () {}, play: function () {} };
+    var ctx = null;
+    function unlock() {
+      try {
+        if (!ctx) ctx = new Ctx();
+        if (ctx.state === 'suspended') ctx.resume();
+        // A silent blip during the tap lets iOS play the chime later without a tap.
+        var o = ctx.createOscillator(), gn = ctx.createGain();
+        gn.gain.value = 0;
+        o.connect(gn); gn.connect(ctx.destination);
+        o.start(); o.stop(ctx.currentTime + 0.01);
+      } catch (e) {}
+    }
+    function note(freq, at, dur) {
+      var o = ctx.createOscillator(), gn = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = freq;
+      gn.gain.setValueAtTime(0.0001, at);
+      gn.gain.exponentialRampToValueAtTime(0.22, at + 0.04);
+      gn.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+      o.connect(gn); gn.connect(ctx.destination);
+      o.start(at); o.stop(at + dur + 0.05);
+    }
+    function play() {
+      try {
+        if (!ctx) return;
+        if (ctx.state === 'suspended') ctx.resume();
+        var t = ctx.currentTime + 0.05;
+        note(784, t, 1.6);         // G5
+        note(523.25, t + 0.55, 2.4); // C5
+      } catch (e) {}
+    }
+    return { unlock: unlock, play: play };
+  }
+
+  function startPrayerTime(g, minutes, prayers) {
+    $toast.hidden = true;
+    var chime = makeChime();
+    chime.unlock();
+
+    var totalMs = minutes * 60 * 1000;
+    var elapsedBefore = 0;       // ms banked before the current run
+    var runStart = Date.now();   // null while paused
+    var stack = shuffle(prayers);
+    var index = 0;
+    var prayedCount = 0;
+    var finished = false;
+    var tick = null;
+    var wakeLock = null;
+
+    function requestWake() {
+      if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+      navigator.wakeLock.request('screen').then(function (l) { wakeLock = l; }).catch(function () {});
+    }
+    function releaseWake() {
+      if (wakeLock) { wakeLock.release().catch(function () {}); wakeLock = null; }
+    }
+    function onVisible() { if (document.visibilityState === 'visible' && !finished && runStart) requestWake(); }
+    document.addEventListener('visibilitychange', onVisible);
+    requestWake();
+
+    function elapsed() { return elapsedBefore + (runStart ? Date.now() - runStart : 0); }
+
+    // Countdown ring
+    var R = 44, C = 2 * Math.PI * R;
+    var ns = 'http://www.w3.org/2000/svg';
+    var ring = document.createElementNS(ns, 'svg');
+    ring.setAttribute('viewBox', '0 0 100 100');
+    ring.setAttribute('class', 'ring');
+    ring.setAttribute('aria-hidden', 'true');
+    var bg = document.createElementNS(ns, 'circle');
+    bg.setAttribute('cx', '50'); bg.setAttribute('cy', '50'); bg.setAttribute('r', String(R)); bg.setAttribute('class', 'ring-bg');
+    var fg = document.createElementNS(ns, 'circle');
+    fg.setAttribute('cx', '50'); fg.setAttribute('cy', '50'); fg.setAttribute('r', String(R)); fg.setAttribute('class', 'ring-fg');
+    fg.setAttribute('stroke-dasharray', String(C));
+    fg.setAttribute('transform', 'rotate(-90 50 50)');
+    ring.appendChild(bg); ring.appendChild(fg);
+    var timeText = h('span', { class: 'ring-time' });
+    var timer = h('div', { class: 'ring-wrap', role: 'timer', 'aria-label': 'Time remaining' }, ring, timeText);
+
+    var cardList = h('p', { class: 'pt-list' });
+    var cardTitle = h('h1', { class: 'pt-title' });
+    var cardBody = h('div', { class: 'pt-body' });
+    // The card is a large tap target; the "Next prayer" button is the accessible way to advance.
+    var card = h('article', { class: 'pt-card', 'aria-live': 'polite', onclick: next },
+      cardList, cardTitle, cardBody, h('span', { class: 'pt-hint', 'aria-hidden': 'true', text: 'Tap for the next prayer' }));
+    var progress = h('p', { class: 'pt-progress', 'aria-live': 'polite' });
+
+    var pauseBtn = h('button', { class: 'btn secondary', type: 'button', text: 'Pause', onclick: togglePause });
+    var nextBtn = h('button', { class: 'btn', type: 'button', text: 'Next prayer', onclick: next });
+    var endBtn = h('button', { class: 'btn quiet', type: 'button', text: 'End', onclick: function () { finish(false); } });
+
+    render(h('div', { class: 'pt' },
+      h('header', { class: 'pt-top' }, timer, progress),
+      h('main', { class: 'pt-main' }, card),
+      h('footer', { class: 'pt-controls' }, pauseBtn, nextBtn, endBtn)));
+
+    function showCard() {
+      var p = stack[index];
+      cardList.textContent = listName(p.list_id);
+      cardTitle.textContent = p.title;
+      cardBody.textContent = p.body || '';
+      card.scrollTop = 0;
+      progress.textContent = prayedCount ? 'Prayed for ' + prayedCount : '';
+    }
+
+    function drawTime() {
+      var left = Math.max(0, totalMs - elapsed());
+      var s = Math.ceil(left / 1000);
+      timeText.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      fg.setAttribute('stroke-dashoffset', String(C * (1 - left / totalMs)));
+      if (left <= 0 && !finished) finish(true);
+    }
+
+    function next() {
+      if (finished || !runStart) return;
+      markPrayed(stack[index]).catch(function () {});
+      prayedCount += 1;
+      index += 1;
+      if (index >= stack.length) {
+        // Prayed through everything: reshuffle and keep going, avoiding an immediate repeat.
+        var last = stack[stack.length - 1];
+        stack = shuffle(prayers);
+        if (stack.length > 1 && stack[0] === last) { stack.push(stack.shift()); }
+        index = 0;
+        toast('You\'ve prayed through every prayer. Starting again.');
+      }
+      showCard();
+    }
+
+    function togglePause() {
+      if (finished) return;
+      if (runStart) {
+        elapsedBefore += Date.now() - runStart;
+        runStart = null;
+        pauseBtn.textContent = 'Resume';
+        nextBtn.disabled = true;
+        card.classList.add('paused');
+        releaseWake();
+      } else {
+        runStart = Date.now();
+        pauseBtn.textContent = 'Pause';
+        nextBtn.disabled = false;
+        card.classList.remove('paused');
+        requestWake();
+      }
+      drawTime();
+    }
+
+    function cleanup() {
+      finished = true;
+      clearInterval(tick);
+      releaseWake();
+      document.removeEventListener('visibilitychange', onVisible);
+    }
+
+    // timeUp: the card on screen when time runs out counts as prayed too.
+    function finish(timeUp) {
+      if (finished) return;
+      if (!timeUp && prayedCount === 0 && elapsed() < 5000) { cleanup(); showGroup(g); return; }
+      if (!timeUp && !confirm('End prayer time now?')) return;
+      if (timeUp) {
+        markPrayed(stack[index]).catch(function () {});
+        prayedCount += 1;
+        chime.play();
+      }
+      cleanup();
+      showAmen(g, prayedCount);
+    }
+
+    showCard();
+    drawTime();
+    tick = setInterval(drawTime, 250);
+  }
+
+  function showAmen(g, count) {
+    render(h('div', { class: 'amen' },
+      h('main', { class: 'amen-inner' },
         h('img', { src: '../icons/icon-192.png', alt: '' }),
-        h('h2', { text: 'Prayer lists are coming soon' }),
-        h('p', { text: 'You\'re in ' + g.name + '. Your group\'s prayer lists and prayer time will show up here in the next update.' })));
+        h('h1', { text: 'Amen' }),
+        h('p', { class: 'amen-count', text: count === 1 ? 'You prayed for 1 prayer.' : 'You prayed for ' + count + ' prayers.' }),
+        h('p', { class: 'amen-verse', text: '“His hands were steady until the going down of the sun.” Exodus 17:12' }),
+        h('button', { class: 'btn block', type: 'button', text: 'Done', 'data-autofocus': true, onclick: function () { state.tab = 'prayers'; showGroup(g); } }))));
   }
 
   // People: pending join requests (approvers), then members. Owner can change roles and remove people.
@@ -770,7 +1174,9 @@
 
   // Refresh when the app comes back to the foreground (e.g. to pick up an approval).
   document.addEventListener('visibilitychange', function () {
+    // Only refresh the main group and pending screens; never interrupt prayer time or a form.
     if (document.visibilityState !== 'visible' || !state.user || sheetEl) return;
+    if (state.view !== 'group' && state.view !== 'pending') return;
     if (document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
     loadGroups().then(route).catch(function () {});
   });
