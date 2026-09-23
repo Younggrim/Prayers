@@ -29,11 +29,11 @@ begin;
 -- ---------------------------------------------------------------------------
 
 create temp table results (n serial, label text, ok boolean, detail text);
-grant all on results to authenticated, anon;
-grant usage on sequence results_n_seq to authenticated, anon;
+grant all on results to authenticated, anon, service_role;
+grant usage on sequence results_n_seq to authenticated, anon, service_role;
 
 create temp table ids (k text primary key, v uuid);
-grant select on ids to authenticated, anon;
+grant select on ids to authenticated, anon, service_role;
 
 create function pg_temp.id(key text) returns uuid language sql stable
 as $$ select v from ids where k = key $$;
@@ -45,6 +45,11 @@ begin
     perform set_config('request.jwt.claims', '{"role":"anon"}', true);
     perform set_config('request.jwt.claim.sub', '', true);
     perform set_config('role', 'anon', true);
+  elsif who = 'service' then
+    -- The notification sender (Edge Function with the service role key).
+    perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+    perform set_config('request.jwt.claim.sub', '', true);
+    perform set_config('role', 'service_role', true);
   else
     perform set_config('request.jwt.claims',
       json_build_object('sub', pg_temp.id(who), 'role', 'authenticated')::text, true);
@@ -493,6 +498,141 @@ reset role;
 select pg_temp.act_as('member2');
 select pg_temp.expect_count('a removed member can no longer read prayers',
   format('select count(*) from public.prayers where group_id = %L', pg_temp.id('group')), 0);
+reset role;
+
+-- ---------------------------------------------------------------------------
+-- Push notifications: subscriptions, settings, urgent and pray-at prayers, reminders
+-- ---------------------------------------------------------------------------
+
+select pg_temp.act_as('member');
+select pg_temp.expect_ok('a member can turn on notifications for their phone',
+  $q$select public.save_push_subscription('https://push.example.test/member-phone', 'sample-key', 'sample-auth')$q$);
+select pg_temp.expect_count('a member sees their own phone subscription',
+  'select count(*) from public.push_subscriptions', 1);
+select pg_temp.expect_blocked('a member cannot add a phone subscription for someone else',
+  format($q$insert into public.push_subscriptions (user_id, endpoint, p256dh, auth)
+            values (%L, 'https://push.example.test/spoof', 'k', 'a')$q$, pg_temp.id('approver')));
+select pg_temp.expect_ok('a member can save a daily prayer reminder',
+  $q$insert into public.notification_settings (reminder_enabled, reminder_time, timezone)
+     values (true, date_trunc('minute', now() at time zone 'UTC')::time, 'UTC')$q$);
+select pg_temp.expect_blocked('an unknown time zone is rejected',
+  $q$update public.notification_settings set timezone = 'Not/AZone'$q$);
+update public.notification_settings set reminder_last_sent = current_date;
+select pg_temp.expect_count('a member cannot mark their own reminder as sent',
+  'select count(*) from public.notification_settings where reminder_last_sent is null', 1);
+reset role;
+
+select pg_temp.act_as('approver');
+select pg_temp.expect_ok('an approver can turn on notifications for their phone',
+  $q$select public.save_push_subscription('https://push.example.test/approver-phone', 'sample-key', 'sample-auth')$q$);
+select pg_temp.expect_count('people only see their own phone subscriptions',
+  'select count(*) from public.push_subscriptions', 1);
+select pg_temp.expect_count('people cannot see others'' notification settings',
+  'select count(*) from public.notification_settings', 0);
+select pg_temp.expect_blocked('signed-in users cannot claim notifications to send',
+  'select count(*) from public.claim_due_notifications()');
+select pg_temp.expect_blocked('signed-in users cannot list who gets notified',
+  format($q$select count(*) from public.push_targets(%L, 'urgent')$q$, pg_temp.id('group')));
+select pg_temp.expect_blocked('signed-in users cannot claim reminders',
+  'select count(*) from public.claim_due_reminders()');
+reset role;
+
+select pg_temp.act_as('member2');
+select pg_temp.expect_ok('a removed member can still register a phone',
+  $q$select public.save_push_subscription('https://push.example.test/member2-phone', 'sample-key', 'sample-auth')$q$);
+reset role;
+
+select pg_temp.act_as('anon');
+select pg_temp.expect_blocked('a signed-out visitor cannot register a phone',
+  $q$select public.save_push_subscription('https://push.example.test/anon', 'k', 'a')$q$);
+reset role;
+
+select pg_temp.act_as('member');
+select pg_temp.expect_ok('a member can post an urgent prayer (approval is off)',
+  format($q$insert into public.prayers (group_id, title, status, requested_by, urgent, urgent_notified_at)
+            values (%L, 'Sample Urgent', 'active', %L, true, now())$q$,
+         pg_temp.id('group'), pg_temp.id('member')));
+reset role;
+insert into ids select 'urgent_prayer', id from public.prayers where title = 'Sample Urgent' and group_id = pg_temp.id('group');
+select pg_temp.expect_count('a member cannot pre-mark an urgent prayer as already sent',
+  format('select count(*) from public.prayers where id = %L and urgent_notified_at is null', pg_temp.id('urgent_prayer')), 1);
+
+select pg_temp.act_as('service');
+select pg_temp.expect_count('the sender claims a new urgent prayer',
+  format($q$select count(*) from public.claim_due_notifications() where kind = 'urgent' and prayer_id = %L$q$, pg_temp.id('urgent_prayer')), 1);
+select pg_temp.expect_count('an urgent prayer is only sent once',
+  format('select count(*) from public.claim_due_notifications() where prayer_id = %L', pg_temp.id('urgent_prayer')), 0);
+select pg_temp.expect_count('urgent pushes go only to active members with notifications on',
+  format($q$select count(*) from public.push_targets(%L, 'urgent')$q$, pg_temp.id('group')), 2);
+reset role;
+
+select pg_temp.act_as('member');
+update public.notification_settings set urgent = false;
+reset role;
+select pg_temp.act_as('service');
+select pg_temp.expect_count('people who turned off urgent pushes are skipped',
+  format($q$select count(*) from public.push_targets(%L, 'urgent')$q$, pg_temp.id('group')), 1);
+select pg_temp.expect_count('removed members never get pray-at pushes',
+  format($q$select count(*) from public.push_targets(%L, 'pray_at') where user_id = %L$q$, pg_temp.id('group'), pg_temp.id('member2')), 0);
+reset role;
+
+select pg_temp.act_as('member');
+select pg_temp.expect_blocked('a member cannot change an existing prayer''s pray-at time',
+  format($q$update public.prayers set pray_at = now() where id = %L$q$, pg_temp.id('urgent_prayer')));
+reset role;
+select pg_temp.act_as('approver');
+select pg_temp.expect_ok('an approver can set a pray-at time',
+  format($q$update public.prayers set pray_at = now() - interval '1 minute' where id = %L$q$, pg_temp.id('urgent_prayer')));
+reset role;
+
+select pg_temp.act_as('service');
+select pg_temp.expect_count('the sender claims a pray-at time when it arrives',
+  format($q$select count(*) from public.claim_due_notifications() where kind = 'pray_at' and prayer_id = %L$q$, pg_temp.id('urgent_prayer')), 1);
+select pg_temp.expect_count('a due daily reminder is claimed',
+  format('select count(*) from public.claim_due_reminders() where user_id = %L', pg_temp.id('member')), 1);
+select pg_temp.expect_count('a daily reminder is only sent once a day',
+  'select count(*) from public.claim_due_reminders()', 0);
+select pg_temp.expect_count('reminder pushes go to that person''s phones',
+  format('select count(*) from public.push_targets_for_users(array[%L]::uuid[])', pg_temp.id('member')), 1);
+reset role;
+
+-- ---------------------------------------------------------------------------
+-- Ownership transfer
+-- ---------------------------------------------------------------------------
+
+select pg_temp.act_as('member');
+select pg_temp.expect_blocked('a member cannot make themselves owner',
+  format('select public.transfer_ownership(%L, %L)', pg_temp.id('group'), pg_temp.id('member')));
+reset role;
+select pg_temp.act_as('approver');
+select pg_temp.expect_blocked('an approver cannot take ownership',
+  format('select public.transfer_ownership(%L, %L)', pg_temp.id('group'), pg_temp.id('approver')));
+reset role;
+select pg_temp.act_as('owner');
+select pg_temp.expect_blocked('ownership cannot go to someone outside the group',
+  format('select public.transfer_ownership(%L, %L)', pg_temp.id('group'), pg_temp.id('outsider')));
+select pg_temp.expect_blocked('the owner role still cannot be set directly',
+  format($q$update public.group_members set role = 'owner' where group_id = %L and user_id = %L$q$,
+         pg_temp.id('group'), pg_temp.id('member')));
+select pg_temp.expect_ok('the owner can hand the group to an active member',
+  format('select public.transfer_ownership(%L, %L)', pg_temp.id('group'), pg_temp.id('member')));
+reset role;
+select pg_temp.expect_count('the group has exactly one owner, the new one',
+  format($q$select count(*) from public.group_members where group_id = %L and role = 'owner' and user_id = %L$q$,
+         pg_temp.id('group'), pg_temp.id('member')), 1);
+select pg_temp.expect_count('the former owner is now an approver',
+  format($q$select count(*) from public.group_members where group_id = %L and role = 'approver' and user_id = %L$q$,
+         pg_temp.id('group'), pg_temp.id('owner')), 1);
+
+select pg_temp.act_as('owner');
+select pg_temp.expect_blocked('the former owner cannot take ownership back',
+  format('select public.transfer_ownership(%L, %L)', pg_temp.id('group'), pg_temp.id('owner')));
+select pg_temp.expect_ok('the former owner can now leave the group',
+  format('delete from public.group_members where group_id = %L and user_id = %L', pg_temp.id('group'), pg_temp.id('owner')));
+reset role;
+select pg_temp.act_as('member');
+select pg_temp.expect_blocked('the new owner cannot leave the group',
+  format('delete from public.group_members where group_id = %L and user_id = %L', pg_temp.id('group'), pg_temp.id('member')));
 reset role;
 
 -- ---------------------------------------------------------------------------
