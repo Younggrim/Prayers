@@ -1568,8 +1568,7 @@
       drawPrefs(on);
     }
 
-    // iPhone only allows pushManager.subscribe() while it is still handling the tap, so the
-    // registration is fetched ahead of time and subscribe() is called before anything else waits.
+    // The registration is fetched ahead of time so a tap can start the permission prompt immediately.
     var swReg = null, current = null;
     navigator.serviceWorker.ready.then(function (reg) { swReg = reg; });
 
@@ -1584,38 +1583,37 @@
       return swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKey() });
     }
     function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
-    // Resolves once the permission prompt has been answered with Allow (or gives up after a minute).
-    function waitForGrant() {
-      var until = Date.now() + 60000;
-      return (function check() {
-        if (Notification.permission === 'granted') return Promise.resolve(true);
-        if (Date.now() > until) return Promise.resolve(false);
-        return wait(500).then(check);
+    // iPhone can refuse the sign-up for a moment right after Allow, so try a few times.
+    function subscribeWithRetries() {
+      var tries = 0;
+      return (function attempt() {
+        return subscribe().catch(function (e) {
+          if (++tries >= 5) throw e;
+          return wait(1000).then(attempt);
+        });
       })();
     }
 
     toggleBtn.addEventListener('click', function (ev) {
       if (current && Notification.permission === 'granted') return turnOff(ev);
-      // Called straight from the tap: iPhone only shows the Allow prompt for a tap.
-      var first = swReg ? subscribe() : Promise.reject(new Error('Upheld is still starting up. Try again in a moment.'));
+      // Start straight from the tap: iPhone only shows the Allow prompt in response to a tap.
+      var first;
+      if (!swReg) first = Promise.reject(new Error('Upheld is still starting up. Try again in a moment.'));
+      else if (Notification.permission === 'granted') first = subscribe();
+      else first = Notification.requestPermission().then(function (perm) {
+        if (perm !== 'granted') {
+          var e = new Error('Notifications weren\'t allowed.');
+          e.name = 'NotAllowedError';
+          throw e;
+        }
+        return subscribeWithRetries();
+      });
       first.catch(function () {});
       busy(toggleBtn, err, function () {
         return first.catch(function (e) {
-          if (!swReg) throw e;
-          // iPhone can reject before the person has answered the prompt, or just after they tap Allow.
-          // Wait for Allow, then try again a few times (no tap is needed once it's allowed).
-          toggleBtn.textContent = 'Waiting for Allow…';
-          return waitForGrant().then(function (granted) {
-            if (!granted) throw e;
-            toggleBtn.textContent = 'Turning on…';
-            var tries = 0;
-            return (function attempt() {
-              return subscribe().catch(function (e2) {
-                if (++tries >= 4) throw e2;
-                return wait(1000).then(attempt);
-              });
-            })();
-          });
+          if (!swReg || Notification.permission !== 'granted') throw e;
+          toggleBtn.textContent = 'Turning on…';
+          return subscribeWithRetries();
         }).catch(function (e) {
           draw(null);
           var detail = ' (' + ((e && e.name) || 'Error') + ', permission ' + Notification.permission + ')';
