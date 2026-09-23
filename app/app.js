@@ -1554,8 +1554,11 @@
       current = sub || null;
       var on = !!sub && Notification.permission === 'granted';
       if (Notification.permission === 'denied') {
-        status.textContent = 'Notifications are blocked for Upheld on this phone. On iPhone, the simplest fix is to delete Upheld from your home screen, add it again from Safari, and sign back in. Then tap Turn on notifications and choose Allow.';
-        toggleBtn.hidden = true;
+        // iPhone can keep reporting "denied" after it's allowed in Settings, so always offer to try again.
+        status.textContent = 'Notifications look blocked for Upheld on this phone. If you\'ve allowed them in Settings, tap Turn on notifications. If that doesn\'t work, delete Upheld from your home screen, add it again from Safari, sign back in, and choose Allow when asked.';
+        toggleBtn.hidden = false;
+        toggleBtn.textContent = 'Turn on notifications';
+        toggleBtn.className = 'btn small';
       } else {
         status.textContent = on ? 'On for this phone.' : 'Get a push for urgent prayers, pray-at times, and your own prayer reminder.';
         toggleBtn.hidden = false;
@@ -1586,7 +1589,7 @@
       busy(toggleBtn, err, function () {
         return pending.catch(function (e) {
           draw(null);
-          if (Notification.permission === 'denied') return null; // draw() already explains how to unblock
+          if (Notification.permission === 'denied') throw new Error('Still blocked. Try deleting Upheld from your home screen and adding it again.');
           throw e && /denied|not allowed/i.test(e.message || '') ? new Error('Notifications weren\'t allowed. Tap "Turn on notifications" again and choose Allow.') : e;
         }).then(function (newSub) {
           if (!newSub) return;
