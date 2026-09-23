@@ -1468,6 +1468,8 @@
 
   var DAY_LABELS = [['S', 'Sunday'], ['M', 'Monday'], ['T', 'Tuesday'], ['W', 'Wednesday'], ['T', 'Thursday'], ['F', 'Friday'], ['S', 'Saturday']];
 
+  var NOTIFY_BUILD = 13; // bump when the notifications code changes, so a phone shows which version it runs
+
   function notificationsCard() {
     var card = h('section', { class: 'card', id: 'notifications' }, h('h2', { text: 'Notifications' }));
     if (!cfg.vapidPublicKey) {
@@ -1483,7 +1485,16 @@
     var status = h('p', { class: 'hint' });
     var toggleBtn = h('button', { class: 'btn small', type: 'button', text: 'Turn on notifications' });
     var prefs = h('div', { class: 'stack notif-prefs' });
-    card.append(status, h('div', { class: 'row' }, toggleBtn), err, prefs);
+    // A small readout that helps troubleshoot a phone that won't turn notifications on.
+    var check = h('p', { class: 'hint check-line' });
+    function drawCheck(sub) {
+      var ios = (navigator.userAgent.match(/OS (\d+)[_.](\d+)/) || []);
+      check.textContent = 'Phone check: permission ' + Notification.permission +
+        ' · signed up ' + (sub ? 'yes' : 'no') +
+        (ios[1] ? ' · iOS ' + ios[1] + '.' + ios[2] : '') +
+        ' · app ' + NOTIFY_BUILD;
+    }
+    card.append(status, h('div', { class: 'row' }, toggleBtn), err, prefs, check);
 
     var settings = { urgent: true, scheduled: true, reminder_enabled: false, reminder_time: '07:00', reminder_days: [0, 1, 2, 3, 4, 5, 6] };
 
@@ -1552,6 +1563,7 @@
 
     function draw(sub) {
       current = sub || null;
+      drawCheck(current);
       var on = !!sub && Notification.permission === 'granted';
       if (Notification.permission === 'denied') {
         // iPhone can keep reporting "denied" after it's allowed in Settings, so always offer to try again.

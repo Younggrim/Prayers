@@ -547,3 +547,4 @@ input[type="datetime-local"]:focus, input[type="time"]:focus { outline: 2px soli
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+.check-line { font-size: 13px; margin-top: 14px; }
