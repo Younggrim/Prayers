@@ -19,6 +19,7 @@
 \set ON_ERROR_STOP on
 \set QUIET on
 \pset footer off
+\pset pager off
 \o /dev/null
 
 begin;
@@ -245,6 +246,52 @@ select pg_temp.expect_blocked('signed-out visitor cannot join a group',
 reset role;
 
 -- ---------------------------------------------------------------------------
+-- my_groups() and group_roster()
+-- ---------------------------------------------------------------------------
+
+select pg_temp.act_as('pending');
+select pg_temp.expect_count('a pending member sees their own pending group in my_groups()',
+  format($q$select count(*) from public.my_groups() where group_id = %L and status = 'pending' and name = 'Sample Group'$q$,
+         pg_temp.id('group')), 1);
+select pg_temp.expect_count('a pending member does not get the invite code or settings',
+  format($q$select count(*) from public.my_groups() where group_id = %L and (invite_code is not null or require_approval is not null)$q$,
+         pg_temp.id('group')), 0);
+select pg_temp.expect_count('a pending member cannot read the roster',
+  format('select count(*) from public.group_roster(%L)', pg_temp.id('group')), 0);
+reset role;
+
+select pg_temp.act_as('member');
+select pg_temp.expect_count('a member does not get the invite code',
+  format($q$select count(*) from public.my_groups() where group_id = %L and invite_code is not null$q$, pg_temp.id('group')), 0);
+select pg_temp.expect_count('a member''s roster shows only active people',
+  format($q$select count(*) from public.group_roster(%L) where status = 'pending'$q$, pg_temp.id('group')), 0);
+select pg_temp.expect_count('a member''s roster shows the four active people',
+  format('select count(*) from public.group_roster(%L)', pg_temp.id('group')), 4);
+reset role;
+
+select pg_temp.act_as('approver');
+select pg_temp.expect_count('an approver gets the invite code',
+  format($q$select count(*) from public.my_groups() where group_id = %L and invite_code is not null$q$, pg_temp.id('group')), 1);
+select pg_temp.expect_count('an approver''s roster includes pending join requests with names',
+  format($q$select count(*) from public.group_roster(%L) where status = 'pending' and display_name = 'Sample Pending'$q$,
+         pg_temp.id('group')), 1);
+reset role;
+
+select pg_temp.act_as('outsider');
+select pg_temp.expect_count('a non-member sees no groups in my_groups()',
+  'select count(*) from public.my_groups()', 0);
+select pg_temp.expect_count('a non-member cannot read the roster',
+  format('select count(*) from public.group_roster(%L)', pg_temp.id('group')), 0);
+reset role;
+
+select pg_temp.act_as('anon');
+select pg_temp.expect_blocked('a signed-out visitor cannot call my_groups()',
+  'select count(*) from public.my_groups()');
+select pg_temp.expect_blocked('a signed-out visitor cannot call group_roster()',
+  format('select count(*) from public.group_roster(%L)', pg_temp.id('group')));
+reset role;
+
+-- ---------------------------------------------------------------------------
 -- Prayer requests and approvals
 -- ---------------------------------------------------------------------------
 
@@ -308,6 +355,37 @@ select pg_temp.expect_count('once approved, other members can see the request',
 reset role;
 
 -- ---------------------------------------------------------------------------
+-- Declining a request, and the optional requester name
+-- ---------------------------------------------------------------------------
+
+select pg_temp.act_as('member');
+select pg_temp.expect_ok('a member can submit a request with their name',
+  format($q$insert into public.prayers (group_id, list_id, title, body, status, requested_by, requester_name)
+            values (%L, %L, 'Sample Decline', 'Heavenly Father, we lift up Sample Stranger.', 'pending', %L, 'Sample Member')$q$,
+         pg_temp.id('group'), pg_temp.id('list'), pg_temp.id('member')));
+reset role;
+insert into ids select 'decline_prayer', id from public.prayers where title = 'Sample Decline' and group_id = pg_temp.id('group');
+
+select pg_temp.act_as('member2');
+select pg_temp.expect_count('other members cannot see the requester''s name on a pending request',
+  format($q$select count(*) from public.prayers where id = %L$q$, pg_temp.id('decline_prayer')), 0);
+reset role;
+
+select pg_temp.act_as('approver');
+select pg_temp.expect_count('an approver sees the requester''s name',
+  format($q$select count(*) from public.prayers where id = %L and requester_name = 'Sample Member'$q$, pg_temp.id('decline_prayer')), 1);
+select pg_temp.expect_ok('an approver can decline a request',
+  format($q$update public.prayers set status = 'removed' where id = %L$q$, pg_temp.id('decline_prayer')));
+reset role;
+
+select pg_temp.act_as('member');
+select pg_temp.expect_count('a declined request disappears for the requester',
+  format($q$select count(*) from public.prayers where id = %L$q$, pg_temp.id('decline_prayer')), 0);
+select pg_temp.expect_blocked('the requester cannot resubmit a declined request by editing it',
+  format($q$update public.prayers set status = 'pending' where id = %L$q$, pg_temp.id('decline_prayer')));
+reset role;
+
+-- ---------------------------------------------------------------------------
 -- Answered prayer and removal
 -- ---------------------------------------------------------------------------
 
@@ -348,6 +426,24 @@ select pg_temp.expect_count('other members see the "Prayed 2x" total',
   format('select count(*) from public.prayed_marks where prayer_id = %L', pg_temp.id('pending_prayer')), 2);
 select pg_temp.expect_blocked('a member cannot delete someone else''s mark',
   format('delete from public.prayed_marks where prayer_id = %L', pg_temp.id('pending_prayer')));
+reset role;
+
+select pg_temp.act_as('member2');
+select pg_temp.expect_count('prayed_totals() gives members the group total',
+  format('select coalesce(sum(total), 0) from public.prayed_totals(%L) where prayer_id = %L',
+         pg_temp.id('group'), pg_temp.id('pending_prayer')), 2);
+select pg_temp.expect_count('prayed_totals() counts only the caller''s own marks as "mine"',
+  format('select coalesce(sum(mine), 0) from public.prayed_totals(%L)', pg_temp.id('group')), 0);
+reset role;
+
+select pg_temp.act_as('outsider');
+select pg_temp.expect_count('prayed_totals() gives non-members nothing',
+  format('select count(*) from public.prayed_totals(%L)', pg_temp.id('group')), 0);
+reset role;
+
+select pg_temp.act_as('anon');
+select pg_temp.expect_blocked('a signed-out visitor cannot call prayed_totals()',
+  format('select count(*) from public.prayed_totals(%L)', pg_temp.id('group')));
 reset role;
 
 select pg_temp.act_as('outsider');

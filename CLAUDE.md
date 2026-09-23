@@ -15,12 +15,14 @@ Owner: Jeremy McAdoo. Repo: Younggrim/Prayers. Live site: https://upheld.macdwel
 ## Structure
 
     index.html              Landing page: description, verse, features, install steps, privacy
-    app/index.html          The installed app
+    app/index.html          The installed app (shell); app/app.js (logic), app/app.css, app/config.js (Supabase URL + publishable key)
     manifest.webmanifest    PWA manifest: name Upheld, start_url ./app/, scope ./, display standalone, background and theme #2C5F6F, icons 192, 512, maskable 512
     sw.js                   Service worker: network-first, caches only same-origin GET requests (never API or auth traffic)
     icons/                  App icons and SVG source
     CNAME                   upheld.macdwellings.com
-    supabase/migrations/    SQL migrations
+    supabase/migrations/    SQL migrations (apply with: supabase db push)
+    supabase/functions/     Edge Functions: draft-prayer (deploy with: supabase functions deploy draft-prayer)
+    supabase/tests/         RLS privacy tests (rls_privacy_test.sql); scripts/test-rls-local.sh runs them on a throwaway Postgres
 
 ## Landing page
 
@@ -34,14 +36,16 @@ Browser visitors only see this page. If opened from the home screen (display-mod
 6. Privacy: "Your group's requests stay in your group" with a short note that every group is private, members are approved, and prayers are only shown to signed-in members.
 7. Footer: "Upheld. Made for any small group that prays together."
 
-app/index.html: if not standalone, redirect to ../#install. Otherwise show the icon, "Upheld", and "Sign-in and your group's prayers are coming soon" until sign-in is built.
+app/index.html: if not standalone, redirect to ../#install. Otherwise run the app (app/app.js).
 
 ## Stack
 
 - Hosting: GitHub Pages (static).
-- Backend: Supabase (Postgres, Auth, Row Level Security, Edge Functions).
-- Sign-in: passwordless email with a 6-digit code (Supabase email OTP: signInWithOtp, then verifyOtp with type 'email'). The person types the code into the app. Don't rely on tapping the link: on iPhone, home-screen apps don't share storage with Safari, so a link would sign them in to Safari instead of the app. The Magic Link email template must include {{ .Token }}.
-- Prayer writing: "Request a prayer" drafts a prayer from who + need via a Supabase Edge Function (keys stay server-side). If unavailable, use the template in Prayer style.
+- Backend: Supabase (Postgres, Auth, Row Level Security, Edge Functions). Project "upheld", ref vyiznjphjwehawdzapce, free plan, West US (Oregon). URL and publishable key live in app/config.js.
+- Client library: @supabase/supabase-js 2.117.0 UMD from jsDelivr, pinned with an SRI hash in app/index.html. When upgrading, update the version and the integrity hash together.
+- Sign-in: passwordless email with a 6-digit code (Supabase email OTP: signInWithOtp, then verifyOtp with type 'email'). The person types the code into the app. Don't rely on tapping the link: on iPhone, home-screen apps don't share storage with Safari, so a link would sign them in to Safari instead of the app. The Magic Link email template must include {{ .Token }}. After sign-in, people set a display name (profiles.display_name) before joining a group. Supabase's built-in email only reaches the project's own team members and is heavily rate-limited, so custom SMTP must be set up before inviting a group.
+- Prayer writing: "Request a prayer" drafts a prayer from who + need via the draft-prayer Supabase Edge Function (keys stay server-side). If unavailable, use the template in Prayer style.
+  draft-prayer details: Claude API through the official SDK (npm:@anthropic-ai/sdk@0.127.0), model claude-opus-5, output_config.effort "low", server-side refusal fallbacks (fallbacks: "default", beta server-side-fallback-2026-07-01). The key is the Supabase secret ANTHROPIC_API_KEY. The function only serves active members of the requested group (checked with my_groups() under the caller's session), accepts browser calls only from https://upheld.macdwellings.com, caps input length, and never logs request text. Any failure (not deployed, no key, refusal, timeout) makes the app use the template, with a notice. Pin npm versions at least a day old (Deno's minimum dependency age policy).
 
 ## Roles
 
@@ -60,7 +64,7 @@ Each group has require_approval (default true). When false, member requests post
     group_members   group_id, user_id, role ('owner'|'approver'|'member'), status ('pending'|'active'), created_at
     lists           id, group_id, name, sort_order
     prayers         id, group_id, list_id, title, body, status ('pending'|'active'|'answered'|'removed'),
-                    requested_by, approved_by, created_at, answered_at
+                    requested_by, approved_by, created_at, answered_at, requester_name (optional "Requested by")
     prayed_marks    prayer_id, user_id, created_at
 
 RLS:
@@ -71,6 +75,17 @@ RLS:
 - Joining: a user with a valid invite_code inserts a pending membership; approvers/owner activate it.
 - Users insert and delete only their own prayed_marks.
 
+Server functions (SECURITY DEFINER, signed-in users only):
+
+- create_group(name, description): creates the group; caller becomes its active owner.
+- join_group(invite_code): creates a pending membership; returns only the group's id, name, and the caller's status.
+- rotate_invite_code(group_id): owner only.
+- prayed_totals(group_id): per-prayer "Prayed Nx" totals (group total and the caller's own) for active/answered prayers; active members only.
+- my_groups(): the caller's groups, including pending ones (name and status only). Invite codes go only to approvers/owner.
+- group_roster(group_id): names, roles, and statuses. Members see active people; approvers/owner also see pending join requests.
+
+Triggers enforce what policies can't: only the owner changes roles (never to or from owner); memberships only move pending -> active; approved_by and answered_at are stamped automatically; prayers can't move between groups. The owner can't leave their own group.
+
 ## Features
 
 1. Lists by tab: All, each list, and Praise. Tap a prayer to open its full text and tap "I prayed". Show "Prayed 3x" totals.
@@ -80,6 +95,18 @@ RLS:
 5. Answered prayer: approvers move a prayer to Praise; it leaves prayer time but stays in the Praise tab.
 
 Build order: auth + groups/invites, then lists/prayers, then prayer time, then requests + approvals, then praise.
+
+## Status
+
+- Phase 1 (repo, landing page, Pages, DNS): done.
+- Phase 2 (Supabase schema, RLS, privacy tests): done. Tests pass against the live project.
+- Phase 3 (sign-in, create/join group, approver queue for members, owner role management, require-approval setting): built in app/app.js.
+- Phase 4 (lists view with All / each list / Praise tabs, prayer detail with "I prayed", "Prayed Nx" totals, prayer time): built in app/app.js.
+  Prayer time details: lists order by prayers.created_at (oldest first); Praise orders by answered_at (newest first). Advancing marks the card being left as prayed; when time runs out the card on screen also counts; ending early doesn't count the card on screen. After the whole stack is prayed it reshuffles and continues. Chime is Web Audio (G5 then C5), unlocked on the Begin tap for iOS. Screen Wake Lock is held while running and re-requested when the app returns to the foreground.
+- Phase 5 (request a prayer with a drafted, editable prayer; approver queue with Approve / Edit / Decline; mark answered / move back / remove; approvers manage lists in the Group tab): built.
+  Declining a request or removing a prayer sets status 'removed' (kept, hidden from members). Approvers and owners post directly; members post directly only when require_approval is off. The Prayers tab shows approvers a "Waiting for approval" queue (badge on the tab); members see their own pending requests.
+  Template when drafting is unavailable: "Heavenly Father,\n\nWe lift up <who> to You today. <need>. Surround them with Your peace, give them strength for each day, and let them know they are not alone.\n\nIn Jesus' name, Amen."
+- Next: Phase 6 (one-time import of the group's lists; script and data never committed).
 
 ## Prayer style
 
