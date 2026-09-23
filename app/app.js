@@ -1554,7 +1554,7 @@
       current = sub || null;
       var on = !!sub && Notification.permission === 'granted';
       if (Notification.permission === 'denied') {
-        status.textContent = 'Notifications are blocked for Upheld. Turn them on in your phone\'s Settings, under Notifications.';
+        status.textContent = 'Notifications are blocked for Upheld on this phone. On iPhone, the simplest fix is to delete Upheld from your home screen, add it again from Safari, and sign back in. Then tap Turn on notifications and choose Allow.';
         toggleBtn.hidden = true;
       } else {
         status.textContent = on ? 'On for this phone.' : 'Get a push for urgent prayers, pray-at times, and your own prayer reminder.';
@@ -1586,9 +1586,10 @@
       busy(toggleBtn, err, function () {
         return pending.catch(function (e) {
           draw(null);
-          if (Notification.permission === 'denied') throw new Error('Notifications are blocked for Upheld. Turn them on in your phone\'s Settings, under Notifications.');
+          if (Notification.permission === 'denied') return null; // draw() already explains how to unblock
           throw e && /denied|not allowed/i.test(e.message || '') ? new Error('Notifications weren\'t allowed. Tap "Turn on notifications" again and choose Allow.') : e;
         }).then(function (newSub) {
+          if (!newSub) return;
           var j = newSub.toJSON();
           return sb.rpc('save_push_subscription', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth }).then(must)
             .then(function () { toast('Notifications are on.'); draw(newSub); });
