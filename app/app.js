@@ -625,8 +625,9 @@
     }
 
     el.replaceChildren(h('div', { class: 'actions' }, active.length ? start : null, request), queue, tablist, body);
+    // Bring the selected list tab into view by scrolling the tab row sideways only (never the page).
     var sel = tablist.querySelector('[aria-selected="true"]');
-    if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (sel) tablist.scrollLeft = Math.max(0, sel.offsetLeft - tablist.offsetLeft - 16);
   }
 
   // First meaningful line of the prayer, skipping the "Heavenly Father," greeting.
