@@ -1,4 +1,4 @@
-// Upheld app: sign-in, groups, invites, and membership.
+// Upheld app: sign-in, groups and invites, prayer lists, prayer time, requests and approvals.
 // Plain JavaScript, no build step. All access control is enforced by Supabase Row Level Security;
 // this file only decides what to show.
 (function () {
@@ -39,7 +39,8 @@
     groupId: store.get('groupId'),
     tab: 'prayers',
     email: store.get('email') || '',
-    pendingCount: 0
+    pendingCount: 0,
+    pendingPrayers: 0
   };
 
   // ---------------------------------------------------------------------------
@@ -327,6 +328,7 @@
     state.groupId = id;
     state.tab = 'prayers';
     state.pendingCount = 0;
+    state.pendingPrayers = 0;
     store.set('groupId', id);
     route();
   }
@@ -450,7 +452,7 @@
   function showGroup(g) {
     var content = h('main', { class: 'content', id: 'content' });
     var tabs = [
-      { id: 'prayers', label: 'Prayers' },
+      { id: 'prayers', label: 'Prayers', badge: isApprover(g) ? state.pendingPrayers : 0 },
       { id: 'people', label: 'People', badge: isApprover(g) ? state.pendingCount : 0 },
       { id: 'group', label: 'Group' }
     ];
@@ -481,21 +483,28 @@
     if (isApprover(g)) refreshPendingCount(g);
   }
 
+  // Approvers: keep the "waiting" badges on the Prayers and People tabs current.
   function refreshPendingCount(g) {
     sb.rpc('group_roster', { p_group_id: g.group_id }).then(must).then(function (rows) {
-      var n = rows.filter(function (r) { return r.status === 'pending'; }).length;
-      if (n !== state.pendingCount) {
-        state.pendingCount = n;
-        if (currentGroup() === g) {
-          var tab = $app.querySelectorAll('.tab')[1];
-          if (tab) {
-            var old = tab.querySelector('.badge');
-            if (old) old.remove();
-            if (n) tab.appendChild(h('span', { class: 'badge', text: String(n), 'aria-label': n + ' waiting' }));
-          }
-        }
-      }
+      state.pendingCount = rows.filter(function (r) { return r.status === 'pending'; }).length;
+      setBadge(g, 1, state.pendingCount);
     }).catch(function () {});
+    sb.from('prayers').select('id', { count: 'exact', head: true })
+      .eq('group_id', g.group_id).eq('status', 'pending')
+      .then(function (res) {
+        if (res.error) return;
+        state.pendingPrayers = res.count || 0;
+        setBadge(g, 0, state.pendingPrayers);
+      });
+  }
+
+  function setBadge(g, index, n) {
+    if (currentGroup() !== g || state.view !== 'group') return;
+    var tab = $app.querySelectorAll('.tab')[index];
+    if (!tab) return;
+    var old = tab.querySelector('.badge');
+    if (old) old.remove();
+    if (n) tab.appendChild(h('span', { class: 'badge', text: String(n), 'aria-label': n + ' waiting' }));
   }
 
   // ---------------------------------------------------------------------------
@@ -510,8 +519,8 @@
     return Promise.all([
       sb.from('lists').select('id, name, sort_order').eq('group_id', g.group_id)
         .order('sort_order', { ascending: true }).order('name', { ascending: true }).then(must),
-      sb.from('prayers').select('id, list_id, title, body, status, created_at, answered_at')
-        .eq('group_id', g.group_id).in('status', ['active', 'answered'])
+      sb.from('prayers').select('id, list_id, title, body, status, created_at, answered_at, requested_by, requester_name')
+        .eq('group_id', g.group_id).in('status', ['pending', 'active', 'answered'])
         .order('created_at', { ascending: true }).then(must),
       sb.rpc('prayed_totals', { p_group_id: g.group_id }).then(must)
     ]).then(function (r) {
@@ -531,7 +540,7 @@
 
   function renderPrayers(g, el) {
     el.replaceChildren(h('p', { class: 'empty', text: 'Loading…' }));
-    loadPrayerData(g).then(function () {
+    Promise.all([loadPrayerData(g), isApprover(g) ? loadRosterNames(g) : null]).then(function () {
       if (currentGroup() !== g || state.tab !== 'prayers') return;
       drawPrayers(g, el);
     }).catch(function (err) {
@@ -568,6 +577,32 @@
 
     var start = h('button', { class: 'btn block pt-start', type: 'button', onclick: function () { showPrayerSetup(g); } },
       svg('M12 6v6l4 2|M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20'), 'Start prayer time');
+    var request = h('button', { class: 'btn block secondary pt-start', type: 'button', onclick: function () { showRequest(g); } },
+      svg('M12 5v14|M5 12h14'), 'Request a prayer');
+
+    var pending = pdata.prayers.filter(function (p) { return p.status === 'pending'; });
+    var queue = null;
+    if (isApprover(g)) {
+      state.pendingPrayers = pending.length;
+      setBadge(g, 0, pending.length);
+      if (pending.length) {
+        queue = h('section', { class: 'queue' },
+          h('h2', { class: 'section-title', text: 'Waiting for approval (' + pending.length + ')' }),
+          h('ul', { class: 'prayers' }, pending.map(function (p) { return queueItem(g, p); })));
+      }
+    } else {
+      var mine = pending.filter(function (p) { return state.user && p.requested_by === state.user.id; });
+      if (mine.length) {
+        queue = h('section', { class: 'queue' },
+          h('h2', { class: 'section-title', text: 'Your requests waiting for approval' }),
+          h('ul', { class: 'prayers' }, mine.map(function (p) {
+            return h('li', {}, h('div', { class: 'prayer-item static' },
+              h('span', { class: 'prayer-title', text: p.title }),
+              p.body ? h('span', { class: 'prayer-snippet', text: snippet(p.body) }) : null,
+              h('span', { class: 'prayer-meta' }, h('span', { text: 'Sent ' + shortDate(p.created_at) }))));
+          })));
+      }
+    }
 
     var body;
     if (!shown.length) {
@@ -589,7 +624,7 @@
       }));
     }
 
-    el.replaceChildren(active.length ? start : null, tablist, body);
+    el.replaceChildren(h('div', { class: 'actions' }, active.length ? start : null, request), queue, tablist, body);
     var sel = tablist.querySelector('[aria-selected="true"]');
     if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
@@ -632,6 +667,34 @@
     var back = h('button', { class: 'btn quiet back', type: 'button', onclick: function () { showGroup(g); } },
       svg('M15 18l-6-6 6-6'), 'Back');
 
+    var manage = null;
+    if (isApprover(g)) {
+      var manageErr = h('p', { class: 'error', role: 'alert' });
+      var edit = h('button', { class: 'btn small secondary', type: 'button', text: 'Edit', onclick: function () { showEditor(g, p); } });
+      var move;
+      if (p.status === 'active') {
+        move = h('button', { class: 'btn small', type: 'button', text: 'Mark answered' });
+        move.addEventListener('click', busy(move, manageErr, function () {
+          if (!confirm('Mark "' + p.title + '" as answered? It moves to Praise and leaves prayer time.')) return;
+          return setStatus(p, 'answered').then(function () { toast('Moved to Praise. Thank You, Lord!'); listTab = 'praise'; showGroup(g); });
+        }));
+      } else {
+        move = h('button', { class: 'btn small secondary', type: 'button', text: 'Move back to prayers' });
+        move.addEventListener('click', busy(move, manageErr, function () {
+          return setStatus(p, 'active').then(function () { toast('Moved back to the prayer list.'); showGroup(g); });
+        }));
+      }
+      var remove = h('button', { class: 'btn small danger', type: 'button', text: 'Remove' });
+      remove.addEventListener('click', busy(remove, manageErr, function () {
+        if (!confirm('Remove "' + p.title + '"? It will no longer show for the group.')) return;
+        return setStatus(p, 'removed').then(function () { toast('Prayer removed.'); showGroup(g); });
+      }));
+      manage = h('section', { class: 'card manage' },
+        h('h2', { class: 'section-title', text: 'Approver tools' }),
+        h('div', { class: 'row' }, move, edit, remove),
+        manageErr);
+    }
+
     render(h('div', { class: 'reader' },
       h('header', { class: 'reader-bar' }, back),
       h('main', { class: 'reader-body' },
@@ -639,9 +702,210 @@
         h('h1', { text: p.title }),
         p.status === 'answered' && p.answered_at ? h('p', { class: 'reader-answered', text: 'Answered ' + shortDate(p.answered_at) }) : null,
         h('div', { class: 'prayer-text', text: p.body || '' }),
+        p.requester_name ? h('p', { class: 'reader-by', text: 'Requested by ' + p.requester_name }) : null,
         count,
         prayed,
-        err)));
+        err,
+        manage)));
+  }
+
+  function setStatus(p, status) {
+    return sb.from('prayers').update({ status: status }).eq('id', p.id).select().then(mustChange);
+  }
+
+  // One pending request in the approver queue: Approve / Edit / Decline.
+  function queueItem(g, p) {
+    var err = h('p', { class: 'error', role: 'alert' });
+    var approve = h('button', { class: 'btn small', type: 'button', text: 'Approve' });
+    approve.addEventListener('click', busy(approve, err, function () {
+      return setStatus(p, 'active').then(function () { toast('Approved. It\'s on the prayer list now.'); showGroup(g); });
+    }));
+    var edit = h('button', { class: 'btn small secondary', type: 'button', text: 'Edit', onclick: function () { showEditor(g, p); } });
+    var decline = h('button', { class: 'btn small danger', type: 'button', text: 'Decline' });
+    decline.addEventListener('click', busy(decline, err, function () {
+      if (!confirm('Decline "' + p.title + '"? It won\'t be shared with the group.')) return;
+      return setStatus(p, 'removed').then(function () { toast('Request declined.'); showGroup(g); });
+    }));
+    var from = p.requester_name || (roster[p.requested_by] || '');
+    return h('li', { class: 'queue-item' },
+      h('div', { class: 'prayer-item static' },
+        h('span', { class: 'prayer-title', text: p.title }),
+        h('span', { class: 'prayer-full', text: p.body || '' }),
+        h('span', { class: 'prayer-meta' },
+          listName(p.list_id) ? h('span', { text: listName(p.list_id) }) : null,
+          from ? h('span', { text: 'From ' + from }) : null,
+          h('span', { text: shortDate(p.created_at) })),
+        h('div', { class: 'row' }, approve, edit, decline),
+        err));
+  }
+
+  // Names for "From …" in the approver queue (approvers can read the roster).
+  var roster = {};
+  function loadRosterNames(g) {
+    return sb.rpc('group_roster', { p_group_id: g.group_id }).then(must).then(function (rows) {
+      roster = {};
+      rows.forEach(function (r) { roster[r.user_id] = r.display_name || ''; });
+    }).catch(function () {});
+  }
+
+  // ---------------------------------------------------------------------------
+  // Request a prayer: who / what's going on / your name, then an editable draft
+  // ---------------------------------------------------------------------------
+
+  // The fallback prayer when the drafting service isn't available (CLAUDE.md "Prayer style").
+  function templatePrayer(who, need) {
+    var n = need.trim().replace(/\s+/g, ' ');
+    if (n && !/[.!?]$/.test(n)) n += '.';
+    return 'Heavenly Father,\n\nWe lift up ' + who + ' to You today. ' + (n ? n + ' ' : '') +
+      'Surround them with Your peace, give them strength for each day, and let them know they are not alone.\n\nIn Jesus\' name, Amen.';
+  }
+
+  function draftPrayer(g, who, need) {
+    var timeout = new Promise(function (_, reject) { setTimeout(function () { reject(new Error('timeout')); }, 30000); });
+    var call = sb.functions.invoke('draft-prayer', { body: { group_id: g.group_id, who: who, need: need } })
+      .then(function (res) {
+        if (res.error || !res.data || !res.data.body) throw res.error || new Error('no draft');
+        return { title: res.data.title || who, body: res.data.body, drafted: true };
+      });
+    return Promise.race([call, timeout]).catch(function () {
+      return { title: who, body: templatePrayer(who, need), drafted: false };
+    });
+  }
+
+  function listSelect(id, selected) {
+    if (!pdata.lists.length) return null;
+    var sel = h('select', { id: id },
+      h('option', { value: '', text: 'No list' }),
+      pdata.lists.map(function (l) {
+        return h('option', { value: l.id, text: l.name, selected: l.id === selected });
+      }));
+    return h('div', { class: 'field' }, h('label', { for: id, text: 'List' }), sel);
+  }
+
+  function readerShell(g, title, children, onBack) {
+    render(h('div', { class: 'reader' },
+      h('header', { class: 'reader-bar' },
+        h('button', { class: 'btn quiet back', type: 'button', onclick: onBack || function () { showGroup(g); } }, svg('M15 18l-6-6 6-6'), 'Back')),
+      h('main', { class: 'reader-body' }, h('h1', { text: title }), children)));
+  }
+
+  function showRequest(g, prev) {
+    prev = prev || {};
+    var err = h('p', { class: 'error', role: 'alert' });
+    var who = h('input', { type: 'text', id: 'req-who', maxlength: '100', required: true, value: prev.who || '', 'data-autofocus': true });
+    var need = h('textarea', { id: 'req-need', rows: '5', maxlength: '1500', required: true });
+    need.value = prev.need || '';
+    var name = h('input', { type: 'text', id: 'req-name', maxlength: '80', autocomplete: 'name', value: prev.name != null ? prev.name : '' });
+    var lists = listSelect('req-list', prev.list_id || (listTab !== 'all' && listTab !== 'praise' ? listTab : ''));
+    var draft = h('button', { class: 'btn block', type: 'submit', text: 'Draft my prayer' });
+    var form = h('form', { class: 'card', novalidate: true },
+      h('div', { class: 'field' },
+        h('label', { for: 'req-who', text: 'Who is this prayer for?' },
+          h('span', { class: 'hint', text: 'A first name is fine, like "my brother Sam".' })),
+        who),
+      h('div', { class: 'field' },
+        h('label', { for: 'req-need', text: 'What\'s going on?' },
+          h('span', { class: 'hint', text: 'Share what you\'re comfortable with. Your group will see the prayer, not this note.' })),
+        need),
+      h('div', { class: 'field' },
+        h('label', { for: 'req-name', text: 'Your name (optional)' },
+          h('span', { class: 'hint', text: 'Shown as "Requested by". Leave blank to keep it private.' })),
+        name),
+      lists,
+      draft,
+      err);
+    form.addEventListener('submit', busy(draft, err, function () {
+      var w = who.value.trim().replace(/\s+/g, ' ');
+      var n = need.value.trim();
+      if (!w) throw new Error('Say who this prayer is for.');
+      if (!n) throw new Error('Share a little about what\'s going on.');
+      draft.textContent = 'Writing a prayer…';
+      var info = { who: w, need: n, name: name.value.trim(), list_id: lists ? lists.querySelector('select').value : '' };
+      return draftPrayer(g, w, n).then(function (d) { showDraft(g, info, d); });
+    }));
+    readerShell(g, 'Request a prayer', [
+      h('p', { class: 'lede', text: 'Tell us who needs prayer. Upheld will draft a prayer you can edit before you send it.' }),
+      form]);
+  }
+
+  // The requester reviews and edits the draft, then submits it.
+  function showDraft(g, info, d) {
+    var err = h('p', { class: 'error', role: 'alert' });
+    var title = h('input', { type: 'text', id: 'draft-title', maxlength: '120', required: true, value: d.title });
+    var body = h('textarea', { id: 'draft-body', class: 'prayer-edit', rows: '10', maxlength: '4000', required: true });
+    body.value = d.body;
+    var direct = isApprover(g) || g.require_approval === false;
+    var submit = h('button', { class: 'btn block', type: 'submit', text: direct ? 'Post prayer' : 'Send for approval' });
+    var form = h('form', { class: 'card', novalidate: true },
+      h('div', { class: 'field' }, h('label', { for: 'draft-title', text: 'Title' }), title),
+      h('div', { class: 'field' }, h('label', { for: 'draft-body', text: 'Prayer' }), body),
+      submit,
+      err);
+    form.addEventListener('submit', busy(submit, err, function () {
+      var t = title.value.trim().replace(/\s+/g, ' ');
+      var b = body.value.trim();
+      if (!t) throw new Error('Add a title.');
+      if (!b) throw new Error('The prayer can\'t be empty.');
+      submit.textContent = 'Sending…';
+      return sb.from('prayers').insert({
+        group_id: g.group_id,
+        list_id: info.list_id || null,
+        title: t,
+        body: b,
+        status: direct ? 'active' : 'pending',
+        requested_by: state.user.id,
+        requester_name: info.name || null
+      }).then(must).then(function () {
+        toast(direct ? 'Posted. Your group can pray for this now.' : 'Sent. An approver will review it soon.');
+        state.tab = 'prayers';
+        showGroup(g);
+      });
+    }));
+    readerShell(g, 'Review your prayer', [
+      d.drafted
+        ? h('p', { class: 'lede', text: 'Here\'s a draft. Change anything you like.' })
+        : h('div', { class: 'notice' }, h('p', { text: 'The prayer writer isn\'t available right now, so here\'s a simple starting point. Edit it however you like.' })),
+      form,
+      h('button', { class: 'btn quiet', type: 'button', text: 'Start over', onclick: function () { showRequest(g, info); } })
+    ], function () { showRequest(g, info); });
+  }
+
+  // Approvers edit a prayer (pending, active, or answered). Pending ones can be saved and approved at once.
+  function showEditor(g, p) {
+    var err = h('p', { class: 'error', role: 'alert' });
+    var title = h('input', { type: 'text', id: 'edit-title', maxlength: '120', required: true, value: p.title });
+    var body = h('textarea', { id: 'edit-body', class: 'prayer-edit', rows: '10', maxlength: '4000' });
+    body.value = p.body || '';
+    var name = h('input', { type: 'text', id: 'edit-name', maxlength: '80', value: p.requester_name || '' });
+    var lists = listSelect('edit-list', p.list_id || '');
+    var isPending = p.status === 'pending';
+    var save = h('button', { class: 'btn block', type: 'submit', text: isPending ? 'Save and approve' : 'Save' });
+    var saveOnly = isPending ? h('button', { class: 'btn block secondary', type: 'button', text: 'Save without approving' }) : null;
+    var form = h('form', { class: 'card stack', novalidate: true },
+      h('div', { class: 'field' }, h('label', { for: 'edit-title', text: 'Title' }), title),
+      h('div', { class: 'field' }, h('label', { for: 'edit-body', text: 'Prayer' }), body),
+      lists,
+      h('div', { class: 'field' }, h('label', { for: 'edit-name', text: 'Requested by (optional)' }), name),
+      save,
+      saveOnly,
+      err);
+    function changes(approve) {
+      var t = title.value.trim().replace(/\s+/g, ' ');
+      if (!t) throw new Error('Add a title.');
+      var c = { title: t, body: body.value.trim(), requester_name: name.value.trim() || null };
+      if (lists) c.list_id = lists.querySelector('select').value || null;
+      if (approve) c.status = 'active';
+      return c;
+    }
+    function run(approve) {
+      return sb.from('prayers').update(changes(approve)).eq('id', p.id).select().then(mustChange).then(function () {
+        toast(approve ? 'Saved and approved.' : 'Saved.');
+        showGroup(g);
+      });
+    }
+    form.addEventListener('submit', busy(save, err, function () { return run(isPending); }));
+    if (saveOnly) saveOnly.addEventListener('click', busy(saveOnly, err, function () { return run(false); }));
+    readerShell(g, isPending ? 'Review request' : 'Edit prayer', [form]);
   }
 
   // ---------------------------------------------------------------------------
@@ -1036,6 +1300,8 @@
         inviteErr));
     }
 
+    if (isApprover(g)) parts.push(listsCard(g));
+
     if (isOwner(g)) {
       var settingsErr = h('p', { class: 'error', role: 'alert' });
       var toggle = h('input', { type: 'checkbox', id: 'require-approval', role: 'switch', checked: g.require_approval !== false });
@@ -1112,6 +1378,70 @@
       accountErr));
 
     el.replaceChildren.apply(el, parts);
+  }
+
+  // Approvers manage the group's prayer lists (the tabs on the Prayers screen).
+  function listsCard(g) {
+    var err = h('p', { class: 'error', role: 'alert' });
+    var ul = h('ul', { class: 'people' }, h('li', { class: 'person' }, h('p', { class: 'empty', text: 'Loading…' })));
+    var input = h('input', { type: 'text', id: 'new-list', maxlength: '60', placeholder: 'New list name' });
+    var add = h('button', { class: 'btn small', type: 'submit', text: 'Add list' });
+    var form = h('form', { class: 'row list-add', novalidate: true },
+      h('label', { for: 'new-list', class: 'sr-only', text: 'New list name' }), input, add);
+    var lists = [];
+
+    function load() {
+      return sb.from('lists').select('id, name, sort_order').eq('group_id', g.group_id)
+        .order('sort_order', { ascending: true }).order('name', { ascending: true }).then(must)
+        .then(function (rows) { lists = rows || []; draw(); });
+    }
+    function draw() {
+      if (!lists.length) {
+        ul.replaceChildren(h('li', { class: 'person' }, h('p', { class: 'empty', text: 'No lists yet. Prayers without a list still show under All.' })));
+        return;
+      }
+      ul.replaceChildren.apply(ul, lists.map(function (l, i) {
+        var rename = h('button', { class: 'btn small quiet', type: 'button', text: 'Rename' });
+        rename.addEventListener('click', busy(rename, err, function () {
+          var name = prompt('Rename "' + l.name + '" to:', l.name);
+          if (name == null) return;
+          name = name.trim().replace(/\s+/g, ' ');
+          if (!name) throw new Error('A list needs a name.');
+          return sb.from('lists').update({ name: name }).eq('id', l.id).select().then(mustChange).then(load);
+        }));
+        var up = i > 0 ? h('button', { class: 'btn small quiet', type: 'button', text: '↑', 'aria-label': 'Move ' + l.name + ' up' }) : null;
+        if (up) up.addEventListener('click', busy(up, err, function () {
+          // Swap with the list above, then renumber everything 0..n-1 so orders never collide.
+          var order = lists.slice();
+          order[i] = order[i - 1];
+          order[i - 1] = l;
+          return Promise.all(order.map(function (x, idx) {
+            return x.sort_order === idx ? null
+              : sb.from('lists').update({ sort_order: idx }).eq('id', x.id).select().then(mustChange);
+          })).then(load);
+        }));
+        var del = h('button', { class: 'btn small quiet danger-text', type: 'button', text: 'Delete' });
+        del.addEventListener('click', busy(del, err, function () {
+          if (!confirm('Delete the list "' + l.name + '"? Its prayers stay and still show under All.')) return;
+          return sb.from('lists').delete().eq('id', l.id).select().then(mustChange).then(load);
+        }));
+        return h('li', { class: 'person list-row' },
+          h('div', { class: 'person-name', text: l.name }),
+          h('div', { class: 'list-actions' }, up, rename, del));
+      }));
+    }
+    form.addEventListener('submit', busy(add, err, function () {
+      var name = input.value.trim().replace(/\s+/g, ' ');
+      if (!name) throw new Error('Enter a list name.');
+      var next = lists.reduce(function (m, l) { return Math.max(m, l.sort_order); }, -1) + 1;
+      return sb.from('lists').insert({ group_id: g.group_id, name: name, sort_order: next }).select().then(mustChange)
+        .then(function () { input.value = ''; return load(); });
+    }));
+    load().catch(function (e) { err.textContent = friendlyError(e); });
+    return h('section', { class: 'card' },
+      h('h2', { text: 'Prayer lists' }),
+      h('p', { class: 'hint', text: 'Lists are the tabs on the Prayers screen, like Health or Family.' }),
+      ul, form, err);
   }
 
   // ---------------------------------------------------------------------------

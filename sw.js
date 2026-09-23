@@ -1,6 +1,6 @@
 // Upheld service worker: network-first for same-origin GET requests only.
 // API and auth traffic (Supabase, other origins) is never intercepted or cached.
-const CACHE = 'upheld-v3';
+const CACHE = 'upheld-v4';
 const PRECACHE = [
   './',
   './index.html',

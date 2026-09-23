@@ -469,6 +469,36 @@ input.code {
   .ring-fg { transition: none; }
 }
 
+/* Phase 5: requests, approvals, lists */
+.actions { display: grid; gap: 10px; margin-bottom: 16px; }
+.actions .pt-start { margin: 0; }
+.queue { margin-bottom: 20px; }
+.prayer-item.static { cursor: default; }
+.prayer-full { display: block; white-space: pre-line; font: 400 16px/1.55 var(--serif); margin-top: 8px; overflow-wrap: anywhere; }
+.queue-item .row { margin-top: 12px; }
+.reader-by { color: var(--muted); font-style: italic; }
+.manage { margin-top: 24px; }
+select {
+  width: 100%;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  min-height: 48px;
+}
+textarea { resize: vertical; line-height: 1.5; }
+textarea.prayer-edit { font: 400 18px/1.55 var(--serif); min-height: 260px; }
+.list-add { margin-top: 12px; flex-wrap: nowrap; }
+.list-add input { flex: 1; min-width: 0; }
+.btn.danger-text, .danger-text { color: var(--danger); }
+.list-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.list-row .person-name { flex: 1 1 8em; overflow-wrap: break-word; }
+.list-actions { display: flex; gap: 2px; flex: none; margin-left: auto; }
+.list-actions .btn { padding: 8px 8px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
 #toast {
   position: fixed;
   left: 50%;

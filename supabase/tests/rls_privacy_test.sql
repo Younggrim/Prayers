@@ -355,6 +355,37 @@ select pg_temp.expect_count('once approved, other members can see the request',
 reset role;
 
 -- ---------------------------------------------------------------------------
+-- Declining a request, and the optional requester name
+-- ---------------------------------------------------------------------------
+
+select pg_temp.act_as('member');
+select pg_temp.expect_ok('a member can submit a request with their name',
+  format($q$insert into public.prayers (group_id, list_id, title, body, status, requested_by, requester_name)
+            values (%L, %L, 'Sample Decline', 'Heavenly Father, we lift up Sample Stranger.', 'pending', %L, 'Sample Member')$q$,
+         pg_temp.id('group'), pg_temp.id('list'), pg_temp.id('member')));
+reset role;
+insert into ids select 'decline_prayer', id from public.prayers where title = 'Sample Decline' and group_id = pg_temp.id('group');
+
+select pg_temp.act_as('member2');
+select pg_temp.expect_count('other members cannot see the requester''s name on a pending request',
+  format($q$select count(*) from public.prayers where id = %L$q$, pg_temp.id('decline_prayer')), 0);
+reset role;
+
+select pg_temp.act_as('approver');
+select pg_temp.expect_count('an approver sees the requester''s name',
+  format($q$select count(*) from public.prayers where id = %L and requester_name = 'Sample Member'$q$, pg_temp.id('decline_prayer')), 1);
+select pg_temp.expect_ok('an approver can decline a request',
+  format($q$update public.prayers set status = 'removed' where id = %L$q$, pg_temp.id('decline_prayer')));
+reset role;
+
+select pg_temp.act_as('member');
+select pg_temp.expect_count('a declined request disappears for the requester',
+  format($q$select count(*) from public.prayers where id = %L$q$, pg_temp.id('decline_prayer')), 0);
+select pg_temp.expect_blocked('the requester cannot resubmit a declined request by editing it',
+  format($q$update public.prayers set status = 'pending' where id = %L$q$, pg_temp.id('decline_prayer')));
+reset role;
+
+-- ---------------------------------------------------------------------------
 -- Answered prayer and removal
 -- ---------------------------------------------------------------------------
 
