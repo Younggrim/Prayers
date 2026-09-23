@@ -1,6 +1,6 @@
-// Upheld service worker: network-first for same-origin GET requests only.
+// Upheld service worker: network-first for same-origin GET requests only, plus push notifications.
 // API and auth traffic (Supabase, other origins) is never intercepted or cached.
-const CACHE = 'upheld-v4';
+const CACHE = 'upheld-v5';
 const PRECACHE = [
   './',
   './index.html',
@@ -52,4 +52,33 @@ self.addEventListener('fetch', (event) => {
       })
       .catch(() => caches.match(req).then((hit) => hit || caches.match(req.mode === 'navigate' ? './index.html' : req)))
   );
+});
+
+// Push notifications from the send-notifications Edge Function: { title, body, url, tag }.
+self.addEventListener('push', (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (e) { data = { body: event.data ? event.data.text() : '' }; }
+  event.waitUntil(self.registration.showNotification(data.title || 'Upheld', {
+    body: data.body || '',
+    icon: './icons/icon-192.png',
+    badge: './icons/icon-192.png',
+    tag: data.tag || undefined,
+    data: { url: data.url || '/app/' }
+  }));
+});
+
+// Tapping a notification opens (or focuses) the app on the right prayer.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = new URL((event.notification.data && event.notification.data.url) || '/app/', self.location.origin).href;
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of windows) {
+      if (new URL(client.url).origin === self.location.origin) {
+        if ('navigate' in client) await client.navigate(target).catch(() => {});
+        return client.focus();
+      }
+    }
+    return self.clients.openWindow(target);
+  })());
 });

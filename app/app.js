@@ -147,7 +147,11 @@
           else toast(friendlyError(err));
         })
         .then(function () {
-          if (button.isConnected) { button.disabled = false; button.textContent = label; }
+          // Put the label back only if the action showed a temporary "…" label; actions may set a new one.
+          if (button.isConnected) {
+            button.disabled = false;
+            if (/…$/.test(button.textContent)) button.textContent = label;
+          }
         });
     };
   }
@@ -275,7 +279,7 @@
       .then(function (profile) {
         state.profile = profile;
         if (!profile || !profile.display_name) return showName(true);
-        return loadGroups().then(route);
+        return loadGroups().then(route).then(handleDeepLink);
       });
   }
 
@@ -519,7 +523,7 @@
     return Promise.all([
       sb.from('lists').select('id, name, sort_order').eq('group_id', g.group_id)
         .order('sort_order', { ascending: true }).order('name', { ascending: true }).then(must),
-      sb.from('prayers').select('id, list_id, title, body, status, created_at, answered_at, requested_by, requester_name')
+      sb.from('prayers').select('id, list_id, title, body, status, created_at, answered_at, requested_by, requester_name, urgent, pray_at')
         .eq('group_id', g.group_id).in('status', ['pending', 'active', 'answered'])
         .order('created_at', { ascending: true }).then(must),
       sb.rpc('prayed_totals', { p_group_id: g.group_id }).then(must)
@@ -561,9 +565,9 @@
       shown = pdata.prayers.filter(function (p) { return p.status === 'answered'; })
         .sort(function (a, b) { return String(b.answered_at || '').localeCompare(String(a.answered_at || '')); });
     } else if (listTab === 'all') {
-      shown = active;
+      shown = urgentFirst(active);
     } else {
-      shown = active.filter(function (p) { return p.list_id === listTab; });
+      shown = urgentFirst(active.filter(function (p) { return p.list_id === listTab; }));
     }
 
     var tablist = h('div', { class: 'chips', role: 'tablist', 'aria-label': 'Prayer lists' },
@@ -599,7 +603,7 @@
             return h('li', {}, h('div', { class: 'prayer-item static' },
               h('span', { class: 'prayer-title', text: p.title }),
               p.body ? h('span', { class: 'prayer-snippet', text: snippet(p.body) }) : null,
-              h('span', { class: 'prayer-meta' }, h('span', { text: 'Sent ' + shortDate(p.created_at) }))));
+              h('span', { class: 'prayer-meta' }, flags(p), h('span', { text: 'Sent ' + shortDate(p.created_at) }))));
           })));
       }
     }
@@ -618,13 +622,14 @@
             h('span', { class: 'prayer-title', text: p.title }),
             p.body ? h('span', { class: 'prayer-snippet', text: snippet(p.body) }) : null,
             h('span', { class: 'prayer-meta' },
+              p.status === 'active' ? flags(p) : null,
               listTab === 'all' || listTab === 'praise' ? (listName(p.list_id) ? h('span', { text: listName(p.list_id) }) : null) : null,
               listTab === 'praise' && p.answered_at ? h('span', { text: 'Answered ' + shortDate(p.answered_at) }) : null,
               h('span', { class: 'count', text: prayedLabel(n) }))));
       }));
     }
 
-    el.replaceChildren(h('div', { class: 'actions' }, active.length ? start : null, request), queue, tablist, body);
+    el.replaceChildren.apply(el, [h('div', { class: 'actions' }, active.length ? start : null, request), queue, tablist, body].filter(Boolean));
     // Bring the selected list tab into view by scrolling the tab row sideways only (never the page).
     var sel = tablist.querySelector('[aria-selected="true"]');
     if (sel) tablist.scrollLeft = Math.max(0, sel.offsetLeft - tablist.offsetLeft - 16);
@@ -638,6 +643,58 @@
   }
   function shortDate(iso) {
     try { return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); } catch (e) { return ''; }
+  }
+  function whenLabel(iso) {
+    try {
+      return new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    } catch (e) { return ''; }
+  }
+  // "Urgent" chip and "Pray at …" note for a prayer.
+  function flags(p) {
+    var out = [];
+    if (p.urgent) out.push(h('span', { class: 'flag urgent', text: 'Urgent' }));
+    if (p.pray_at) {
+      var past = new Date(p.pray_at).getTime() < Date.now();
+      out.push(h('span', { class: 'flag when' + (past ? ' past' : ''), text: (past ? 'Prayed at ' : 'Pray at ') + whenLabel(p.pray_at) }));
+    }
+    return out.length ? out : null;
+  }
+  function urgentFirst(list) {
+    return list.slice().sort(function (a, b) { return (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0); });
+  }
+  // datetime-local wants "YYYY-MM-DDTHH:MM" in the phone's own time zone.
+  function toLocalInput(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  // Urgent checkbox and optional "pray at" time, shared by the request form and the editor.
+  function urgencyFields(prefix, urgent, prayAt) {
+    var box = h('input', { type: 'checkbox', id: prefix + '-urgent', checked: !!urgent });
+    var when = h('input', { type: 'datetime-local', id: prefix + '-when', value: toLocalInput(prayAt) });
+    var clear = h('button', { class: 'btn small quiet', type: 'button', text: 'Clear time', onclick: function () { when.value = ''; } });
+    var el = h('div', { class: 'urgency' },
+      h('label', { class: 'check-row urgent-row', for: prefix + '-urgent' }, box,
+        h('span', { class: 'check-name' }, 'This is urgent',
+          h('span', { class: 'hint', text: 'Everyone with notifications on gets a push once it\'s approved.' }))),
+      h('div', { class: 'field' },
+        h('label', { for: prefix + '-when', text: 'Ask the group to pray at a specific time (optional)' },
+          h('span', { class: 'hint', text: 'Like the start of a surgery. Everyone gets a "Pray now" push at that time.' })),
+        h('div', { class: 'row when-row' }, when, clear)));
+    return {
+      el: el,
+      read: function () {
+        var at = null;
+        if (when.value) {
+          var d = new Date(when.value);
+          if (isNaN(d.getTime())) throw new Error('That time doesn\'t look right.');
+          at = d.toISOString();
+        }
+        return { urgent: box.checked, pray_at: at };
+      }
+    };
   }
 
   function markPrayed(p) {
@@ -701,6 +758,7 @@
       h('main', { class: 'reader-body' },
         h('p', { class: 'reader-list', text: p.status === 'answered' ? 'Praise' + (listName(p.list_id) ? ' · ' + listName(p.list_id) : '') : listName(p.list_id) }),
         h('h1', { text: p.title }),
+        p.status === 'active' && (p.urgent || p.pray_at) ? h('p', { class: 'prayer-meta reader-flags' }, flags(p)) : null,
         p.status === 'answered' && p.answered_at ? h('p', { class: 'reader-answered', text: 'Answered ' + shortDate(p.answered_at) }) : null,
         h('div', { class: 'prayer-text', text: p.body || '' }),
         p.requester_name ? h('p', { class: 'reader-by', text: 'Requested by ' + p.requester_name }) : null,
@@ -733,6 +791,7 @@
         h('span', { class: 'prayer-title', text: p.title }),
         h('span', { class: 'prayer-full', text: p.body || '' }),
         h('span', { class: 'prayer-meta' },
+          flags(p),
           listName(p.list_id) ? h('span', { text: listName(p.list_id) }) : null,
           from ? h('span', { text: 'From ' + from }) : null,
           h('span', { text: shortDate(p.created_at) })),
@@ -798,6 +857,7 @@
     need.value = prev.need || '';
     var name = h('input', { type: 'text', id: 'req-name', maxlength: '80', autocomplete: 'name', value: prev.name != null ? prev.name : '' });
     var lists = listSelect('req-list', prev.list_id || (listTab !== 'all' && listTab !== 'praise' ? listTab : ''));
+    var urgency = urgencyFields('req', prev.urgent, prev.pray_at);
     var draft = h('button', { class: 'btn block', type: 'submit', text: 'Draft my prayer' });
     var form = h('form', { class: 'card', novalidate: true },
       h('div', { class: 'field' },
@@ -813,15 +873,18 @@
           h('span', { class: 'hint', text: 'Shown as "Requested by". Leave blank to keep it private.' })),
         name),
       lists,
+      urgency.el,
       draft,
       err);
     form.addEventListener('submit', busy(draft, err, function () {
       var w = who.value.trim().replace(/\s+/g, ' ');
+      var u = urgency.read();
+      if (u.pray_at && new Date(u.pray_at).getTime() < Date.now() - 60000) throw new Error('Choose a pray-at time that hasn\'t passed yet.');
       var n = need.value.trim();
       if (!w) throw new Error('Say who this prayer is for.');
       if (!n) throw new Error('Share a little about what\'s going on.');
       draft.textContent = 'Writing a prayer…';
-      var info = { who: w, need: n, name: name.value.trim(), list_id: lists ? lists.querySelector('select').value : '' };
+      var info = { who: w, need: n, name: name.value.trim(), list_id: lists ? lists.querySelector('select').value : '', urgent: u.urgent, pray_at: u.pray_at };
       return draftPrayer(g, w, n).then(function (d) { showDraft(g, info, d); });
     }));
     readerShell(g, 'Request a prayer', [
@@ -855,7 +918,9 @@
         body: b,
         status: direct ? 'active' : 'pending',
         requested_by: state.user.id,
-        requester_name: info.name || null
+        requester_name: info.name || null,
+        urgent: !!info.urgent,
+        pray_at: info.pray_at || null
       }).then(must).then(function () {
         toast(direct ? 'Posted. Your group can pray for this now.' : 'Sent. An approver will review it soon.');
         state.tab = 'prayers';
@@ -879,6 +944,7 @@
     body.value = p.body || '';
     var name = h('input', { type: 'text', id: 'edit-name', maxlength: '80', value: p.requester_name || '' });
     var lists = listSelect('edit-list', p.list_id || '');
+    var urgency = urgencyFields('edit', p.urgent, p.pray_at);
     var isPending = p.status === 'pending';
     var save = h('button', { class: 'btn block', type: 'submit', text: isPending ? 'Save and approve' : 'Save' });
     var saveOnly = isPending ? h('button', { class: 'btn block secondary', type: 'button', text: 'Save without approving' }) : null;
@@ -886,6 +952,7 @@
       h('div', { class: 'field' }, h('label', { for: 'edit-title', text: 'Title' }), title),
       h('div', { class: 'field' }, h('label', { for: 'edit-body', text: 'Prayer' }), body),
       lists,
+      urgency.el,
       h('div', { class: 'field' }, h('label', { for: 'edit-name', text: 'Requested by (optional)' }), name),
       save,
       saveOnly,
@@ -895,6 +962,9 @@
       if (!t) throw new Error('Add a title.');
       var c = { title: t, body: body.value.trim(), requester_name: name.value.trim() || null };
       if (lists) c.list_id = lists.querySelector('select').value || null;
+      var u = urgency.read();
+      c.urgent = u.urgent;
+      c.pray_at = u.pray_at;
       if (approve) c.status = 'active';
       return c;
     }
@@ -1341,8 +1411,16 @@
           h('div', { class: 'switch' }, toggle, h('span', { class: 'track', 'aria-hidden': 'true' }))),
         h('hr', { style: 'border:0;border-top:1px solid var(--line);margin:18px 0' }),
         renameForm,
+        h('hr', { style: 'border:0;border-top:1px solid var(--line);margin:18px 0' }),
+        h('div', { class: 'setting' },
+          h('div', { class: 'setting-text' },
+            h('strong', { text: 'Transfer ownership' }),
+            h('p', { text: 'Hand this group to another member. You\'ll stay on as an approver.' })),
+          h('button', { class: 'btn small secondary', type: 'button', text: 'Transfer', onclick: function () { showTransfer(g); } })),
         settingsErr));
     }
+
+    parts.push(notificationsCard());
 
     var accountErr = h('p', { class: 'error', role: 'alert' });
     var leaveOrDelete;
@@ -1379,6 +1457,230 @@
       accountErr));
 
     el.replaceChildren.apply(el, parts);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Transfer ownership (owner only)
+  // ---------------------------------------------------------------------------
+
+  function showTransfer(g) {
+    var err = h('p', { class: 'error', role: 'alert' });
+    var pick = h('select', { id: 'new-owner' }, h('option', { value: '', text: 'Loading…' }));
+    var confirmInput = h('input', { type: 'text', id: 'confirm-name', autocomplete: 'off', placeholder: g.name });
+    var go = h('button', { class: 'btn block danger', type: 'submit', text: 'Make them the owner' });
+    var people = [];
+    sb.rpc('group_roster', { p_group_id: g.group_id }).then(must).then(function (rows) {
+      people = rows.filter(function (r) { return r.status === 'active' && r.user_id !== state.user.id; });
+      pick.replaceChildren(h('option', { value: '', text: people.length ? 'Choose a member' : 'No other members yet' }));
+      people.forEach(function (r) { pick.appendChild(h('option', { value: r.user_id, text: personName(r) })); });
+    }).catch(function (e) { err.textContent = friendlyError(e); });
+
+    var form = h('form', { class: 'card', novalidate: true },
+      h('div', { class: 'field' }, h('label', { for: 'new-owner', text: 'New owner' }), pick),
+      h('div', { class: 'field' },
+        h('label', { for: 'confirm-name', text: 'Type the group name to confirm' },
+          h('span', { class: 'hint', text: 'The new owner can choose approvers, change settings, and delete the group. You\'ll become an approver.' })),
+        confirmInput),
+      go,
+      err);
+    form.addEventListener('submit', busy(go, err, function () {
+      var who = people.filter(function (r) { return r.user_id === pick.value; })[0];
+      if (!who) throw new Error('Choose who should own the group.');
+      if (confirmInput.value.trim() !== g.name) throw new Error('Type the group name exactly to confirm.');
+      return sb.rpc('transfer_ownership', { p_group_id: g.group_id, p_new_owner: who.user_id }).then(must)
+        .then(loadGroups)
+        .then(function () {
+          toast(personName(who) + ' is now the owner. You\'re an approver.');
+          state.tab = 'group';
+          showGroup(currentGroup());
+        });
+    }));
+    readerShell(g, 'Transfer ownership', [
+      h('p', { class: 'lede' }, 'Choose who will own ', h('strong', { text: g.name }), '.'),
+      form], function () { state.tab = 'group'; showGroup(g); });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Notifications: this phone's push subscription, what to be notified about, daily reminder
+  // ---------------------------------------------------------------------------
+
+  function pushSupported() {
+    return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  }
+  function vapidKey() {
+    var b64 = (cfg.vapidPublicKey || '').replace(/-/g, '+').replace(/_/g, '/');
+    var raw = atob(b64 + '='.repeat((4 - b64.length % 4) % 4));
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+  function currentSubscription() {
+    return navigator.serviceWorker.ready.then(function (reg) { return reg.pushManager.getSubscription(); });
+  }
+
+  var DAY_LABELS = [['S', 'Sunday'], ['M', 'Monday'], ['T', 'Tuesday'], ['W', 'Wednesday'], ['T', 'Thursday'], ['F', 'Friday'], ['S', 'Saturday']];
+
+  function notificationsCard() {
+    var card = h('section', { class: 'card', id: 'notifications' }, h('h2', { text: 'Notifications' }));
+    if (!cfg.vapidPublicKey) {
+      card.appendChild(h('p', { class: 'hint', text: 'Notifications aren\'t switched on for Upheld yet.' }));
+      return card;
+    }
+    if (!pushSupported()) {
+      card.appendChild(h('p', { class: 'hint', text: 'This phone can\'t get notifications from Upheld here. On iPhone, update to iOS 16.4 or later and open Upheld from your home screen.' }));
+      return card;
+    }
+
+    var err = h('p', { class: 'error', role: 'alert' });
+    var status = h('p', { class: 'hint' });
+    var toggleBtn = h('button', { class: 'btn small', type: 'button', text: 'Turn on notifications' });
+    var prefs = h('div', { class: 'stack notif-prefs' });
+    card.append(status, h('div', { class: 'row' }, toggleBtn), err, prefs);
+
+    var settings = { urgent: true, scheduled: true, reminder_enabled: false, reminder_time: '07:00', reminder_days: [0, 1, 2, 3, 4, 5, 6] };
+
+    function saveSettings(patch) {
+      Object.assign(settings, patch);
+      var row = {
+        user_id: state.user.id,
+        urgent: settings.urgent,
+        scheduled: settings.scheduled,
+        reminder_enabled: settings.reminder_enabled,
+        reminder_time: settings.reminder_time,
+        reminder_days: settings.reminder_days,
+        timezone: (Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York')
+      };
+      return sb.from('notification_settings').upsert(row).select().then(mustChange);
+    }
+
+    function switchRow(id, label, hint, checked, onChange) {
+      var input = h('input', { type: 'checkbox', id: id, role: 'switch', checked: checked });
+      input.addEventListener('change', function () {
+        input.disabled = true;
+        err.textContent = '';
+        Promise.resolve(onChange(input.checked))
+          .catch(function (e) { input.checked = !input.checked; err.textContent = friendlyError(e); })
+          .then(function () { input.disabled = false; });
+      });
+      return h('div', { class: 'setting' },
+        h('div', { class: 'setting-text' }, h('label', { for: id, text: label }), hint ? h('p', { text: hint }) : null),
+        h('div', { class: 'switch' }, input, h('span', { class: 'track', 'aria-hidden': 'true' })));
+    }
+
+    function drawPrefs(on) {
+      if (!on) { prefs.replaceChildren(); return; }
+      var time = h('input', { type: 'time', id: 'reminder-time', value: String(settings.reminder_time).slice(0, 5) });
+      var days = h('div', { class: 'chips wrap days', role: 'group', 'aria-label': 'Reminder days' },
+        DAY_LABELS.map(function (d, i) {
+          var b = h('button', { class: 'chip day', type: 'button', 'aria-label': d[1], 'aria-pressed': settings.reminder_days.indexOf(i) >= 0 ? 'true' : 'false' }, d[0]);
+          b.addEventListener('click', function () { b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); });
+          return b;
+        }));
+      var saveReminder = h('button', { class: 'btn small', type: 'button', text: 'Save reminder' });
+      var reminderBox = h('div', { class: 'reminder', hidden: !settings.reminder_enabled },
+        h('div', { class: 'field' }, h('label', { for: 'reminder-time', text: 'Time' }), time),
+        h('p', { class: 'hint', text: 'Days' }), days,
+        h('div', { class: 'row' }, saveReminder));
+      saveReminder.addEventListener('click', busy(saveReminder, err, function () {
+        var chosen = [];
+        days.querySelectorAll('.day').forEach(function (b, i) { if (b.getAttribute('aria-pressed') === 'true') chosen.push(i); });
+        if (!time.value) throw new Error('Choose a time for your reminder.');
+        if (!chosen.length) throw new Error('Choose at least one day.');
+        return saveSettings({ reminder_enabled: true, reminder_time: time.value, reminder_days: chosen })
+          .then(function () { toast('Reminder saved.'); });
+      }));
+      prefs.replaceChildren(
+        switchRow('notify-urgent', 'Urgent prayers', 'A push when an urgent request is shared.', settings.urgent,
+          function (v) { return saveSettings({ urgent: v }); }),
+        switchRow('notify-scheduled', 'Pray-at times', 'A "Pray now" push when a request asks the group to pray at a set time.', settings.scheduled,
+          function (v) { return saveSettings({ scheduled: v }); }),
+        switchRow('notify-reminder', 'Daily prayer reminder', 'A gentle nudge to spend time in prayer.', settings.reminder_enabled,
+          function (v) {
+            reminderBox.hidden = !v;
+            return saveSettings({ reminder_enabled: v });
+          }),
+        reminderBox);
+    }
+
+    function draw(sub) {
+      var on = !!sub && Notification.permission === 'granted';
+      if (Notification.permission === 'denied') {
+        status.textContent = 'Notifications are blocked for Upheld. Turn them on in your phone\'s Settings, under Notifications.';
+        toggleBtn.hidden = true;
+      } else {
+        status.textContent = on ? 'On for this phone.' : 'Get a push for urgent prayers, pray-at times, and your own prayer reminder.';
+        toggleBtn.hidden = false;
+        toggleBtn.textContent = on ? 'Turn off on this phone' : 'Turn on notifications';
+        toggleBtn.className = on ? 'btn small secondary' : 'btn small';
+      }
+      drawPrefs(on);
+    }
+
+    toggleBtn.addEventListener('click', busy(toggleBtn, err, function () {
+      return currentSubscription().then(function (sub) {
+        if (sub && Notification.permission === 'granted') {
+          return sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint).then(must)
+            .then(function () { return sub.unsubscribe(); })
+            .then(function () { toast('Notifications off for this phone.'); draw(null); });
+        }
+        return Notification.requestPermission().then(function (perm) {
+          if (perm !== 'granted') { draw(null); throw new Error('Notifications weren\'t allowed.'); }
+          return navigator.serviceWorker.ready;
+        }).then(function (reg) {
+          return reg.pushManager.getSubscription().then(function (existing) {
+            return existing || reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKey() });
+          });
+        }).then(function (newSub) {
+          var j = newSub.toJSON();
+          return sb.rpc('save_push_subscription', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth }).then(must)
+            .then(function () { toast('Notifications are on.'); draw(newSub); });
+        });
+      });
+    }));
+
+    status.textContent = 'Checking…';
+    Promise.all([
+      currentSubscription().catch(function () { return null; }),
+      sb.from('notification_settings').select('urgent, scheduled, reminder_enabled, reminder_time, reminder_days')
+        .eq('user_id', state.user.id).maybeSingle().then(must).catch(function () { return null; })
+    ]).then(function (r) {
+      if (r[1]) Object.assign(settings, r[1]);
+      draw(r[0]);
+    });
+    return card;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Opening Upheld from a notification: ?group=…&prayer=… or ?pray=1
+  // ---------------------------------------------------------------------------
+
+  var deepLink = (function () {
+    try {
+      var q = new URLSearchParams(location.search);
+      return { group: q.get('group'), prayer: q.get('prayer'), pray: q.get('pray') === '1' };
+    } catch (e) { return {}; }
+  })();
+
+  function handleDeepLink() {
+    var link = deepLink;
+    deepLink = {};
+    if (!link.group && !link.prayer && !link.pray) return;
+    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+    if (link.group && link.group !== state.groupId) {
+      var target = state.groups.filter(function (x) { return x.group_id === link.group && x.status === 'active'; })[0];
+      if (!target) return;
+      selectGroup(target.group_id);
+    }
+    var g = currentGroup();
+    if (!g || g.status !== 'active') return;
+    return loadPrayerData(g).then(function () {
+      if (link.prayer) {
+        var p = pdata.prayers.filter(function (x) { return x.id === link.prayer; })[0];
+        if (p) showPrayer(g, p);
+      } else if (link.pray) {
+        showPrayerSetup(g);
+      }
+    }).catch(function () {});
   }
 
   // Approvers manage the group's prayer lists (the tabs on the Prayers screen).
