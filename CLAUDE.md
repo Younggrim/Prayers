@@ -118,7 +118,7 @@ Build order: auth + groups/invites, then lists/prayers, then prayer time, then r
 - Phase 5 (request a prayer with a drafted, editable prayer; approver queue with Approve / Edit / Decline; mark answered / move back / remove; approvers manage lists in the Group tab): built.
   Declining a request or removing a prayer sets status 'removed' (kept, hidden from members). Approvers and owners post directly; members post directly only when require_approval is off. The Prayers tab shows approvers a "Waiting for approval" queue (badge on the tab); members see their own pending requests.
   Template when drafting is unavailable: "Heavenly Father,\n\nWe lift up <who> to You today. <need>. Surround them with Your peace, give them strength for each day, and let them know they are not alone.\n\nIn Jesus' name, Amen."
-- Phase 7 (urgent and pray-at pushes, daily prayer reminders, ownership transfer): built. Needs VAPID keys, secrets, db push, and deploying send-notifications to go live.
+- Phase 7 (urgent and pray-at pushes, daily prayer reminders, ownership transfer): built and live (migrations pushed, VAPID secrets set, send-notifications deployed).
 - Next: Phase 6 (one-time import of the group's lists; script and data never committed).
 
 ## Prayer style
