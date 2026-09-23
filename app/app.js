@@ -1580,19 +1580,48 @@
         .then(function () { toast('Notifications off for this phone.'); draw(null); });
     });
 
+    function subscribe() {
+      return swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKey() });
+    }
+    function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+    // Resolves once the permission prompt has been answered with Allow (or gives up after a minute).
+    function waitForGrant() {
+      var until = Date.now() + 60000;
+      return (function check() {
+        if (Notification.permission === 'granted') return Promise.resolve(true);
+        if (Date.now() > until) return Promise.resolve(false);
+        return wait(500).then(check);
+      })();
+    }
+
     toggleBtn.addEventListener('click', function (ev) {
       if (current && Notification.permission === 'granted') return turnOff(ev);
-      var pending = swReg
-        ? swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKey() })
-        : Promise.reject(new Error('Upheld is still starting up. Try again in a moment.'));
-      pending.catch(function () {});
+      // Called straight from the tap: iPhone only shows the Allow prompt for a tap.
+      var first = swReg ? subscribe() : Promise.reject(new Error('Upheld is still starting up. Try again in a moment.'));
+      first.catch(function () {});
       busy(toggleBtn, err, function () {
-        return pending.catch(function (e) {
+        return first.catch(function (e) {
+          if (!swReg) throw e;
+          // iPhone can reject before the person has answered the prompt, or just after they tap Allow.
+          // Wait for Allow, then try again a few times (no tap is needed once it's allowed).
+          toggleBtn.textContent = 'Waiting for Allow…';
+          return waitForGrant().then(function (granted) {
+            if (!granted) throw e;
+            toggleBtn.textContent = 'Turning on…';
+            var tries = 0;
+            return (function attempt() {
+              return subscribe().catch(function (e2) {
+                if (++tries >= 4) throw e2;
+                return wait(1000).then(attempt);
+              });
+            })();
+          });
+        }).catch(function (e) {
           draw(null);
-          if (Notification.permission === 'denied') throw new Error('Still blocked. Try deleting Upheld from your home screen and adding it again.');
-          throw e && /denied|not allowed/i.test(e.message || '') ? new Error('Notifications weren\'t allowed. Tap "Turn on notifications" again and choose Allow.') : e;
+          var detail = ' (' + ((e && e.name) || 'Error') + ', permission ' + Notification.permission + ')';
+          if (Notification.permission === 'denied') throw new Error('Still blocked. Try deleting Upheld from your home screen and adding it again.' + detail);
+          throw new Error('Couldn\'t turn on notifications: ' + ((e && e.message) || 'unknown error') + detail);
         }).then(function (newSub) {
-          if (!newSub) return;
           var j = newSub.toJSON();
           return sb.rpc('save_push_subscription', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth }).then(must)
             .then(function () { toast('Notifications are on.'); draw(newSub); });
