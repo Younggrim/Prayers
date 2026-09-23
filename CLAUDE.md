@@ -21,8 +21,7 @@ Owner: Jeremy McAdoo. Repo: Younggrim/Prayers. Live site: https://upheld.macdwel
     icons/                  App icons and SVG source
     CNAME                   upheld.macdwellings.com
     supabase/migrations/    SQL migrations (apply with: supabase db push)
-    supabase/functions/     Edge Functions: draft-prayer (supabase functions deploy draft-prayer),
-                            send-notifications (supabase functions deploy send-notifications --no-verify-jwt)
+    supabase/functions/     Edge Function: send-notifications (supabase functions deploy send-notifications --no-verify-jwt)
     supabase/tests/         RLS privacy tests (rls_privacy_test.sql); scripts/test-rls-local.sh runs them on a throwaway Postgres
 
 ## Landing page
@@ -46,8 +45,7 @@ app/index.html: if not standalone, redirect to ../#install. Otherwise run the ap
 - Client library: @supabase/supabase-js 2.117.0 UMD from jsDelivr, pinned with an SRI hash in app/index.html. When upgrading, update the version and the integrity hash together.
 - Sign-in: passwordless email with a 6-digit code (Supabase email OTP: signInWithOtp, then verifyOtp with type 'email'). The person types the code into the app. Don't rely on tapping the link: on iPhone, home-screen apps don't share storage with Safari, so a link would sign them in to Safari instead of the app. Both the "Confirm signup" template (used the first time an email signs in) and the "Magic Link" template must include {{ .Token }}, and Supabase only applies custom templates once custom SMTP is set up. Auth Site URL and redirect URL: https://upheld.macdwellings.com/app/. After sign-in, people set a display name (profiles.display_name) before joining a group. Email goes through Resend (custom SMTP in Supabase: smtp.resend.com:465, user "resend", sender Upheld <upheld@macdwellings.com>); the Resend API key lives only in Supabase's SMTP settings. DNS for Resend on macdwellings.com: TXT resend._domainkey, CNAME send and rsend (Proton Mail records on the root domain are separate and untouched).
 - Push notifications: standard Web Push with VAPID. Public key in app/config.js (vapidPublicKey; empty = notifications off). Supabase secrets VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT (mailto:). pg_cron calls send-notifications every minute (migration 20260926000100); it claims what's due with claim_due_notifications() / claim_due_reminders(), which mark items sent in the same statement, so extra calls never duplicate a push. That's why the function runs without JWT verification. Push requests are built with npm:web-push and sent with fetch; 404/410 responses delete the dead subscription. Notification links: /app/?group=<id>&prayer=<id> or /app/?pray=1. Lock-screen text: "Urgent prayer · <group>" / "Pray now · <group>" with the prayer title as the body; "Time to pray" for reminders. On iPhone, pushes need iOS 16.4+ and the home-screen app.
-- Prayer writing: "Request a prayer" drafts a prayer from who + need via the draft-prayer Supabase Edge Function (keys stay server-side). If unavailable, use the template in Prayer style.
-  draft-prayer details: Claude API through the official SDK (npm:@anthropic-ai/sdk@0.127.0), model claude-opus-5, output_config.effort "low", server-side refusal fallbacks (fallbacks: "default", beta server-side-fallback-2026-07-01). The key is the Supabase secret ANTHROPIC_API_KEY. The function only serves active members of the requested group (checked with my_groups() under the caller's session), accepts browser calls only from https://upheld.macdwellings.com, caps input length, and never logs request text. Any failure (not deployed, no key, refusal, timeout) makes the app use the template, with a notice. Pin npm versions at least a day old (Deno's minimum dependency age policy).
+- No AI prayer writing: requests are plain who + what to pray for, written by the requester. (A draft-prayer Edge Function was removed before it was ever deployed.)
 
 ## Roles
 
@@ -100,7 +98,7 @@ Triggers enforce what policies can't: only the owner changes roles (never to or 
 
 1. Lists by tab: All, each list, and Praise. Tap a prayer to open its full text and tap "I prayed". Show "Prayed 3x" totals.
 2. Prayer time: pick a length (3, 5, 10, 15, 20, 30 min) and which lists. Shuffle into one stack; one prayer on screen at a time; tap the card or "Next prayer" to advance (each advance counts as prayed). Countdown ring, Pause, End. Keep the screen awake (Wake Lock API). Soft two-note chime at the end, then "Amen" with how many were prayed for.
-3. Request a prayer: who / what's going on / your name (optional). Draft the prayer, let the requester edit title and text, then submit (pending if the group requires approval).
+3. Request a prayer: one form with who it's for (saved as the title), what to pray for (the body), your name (optional), list, urgent, and pray-at time. Submit posts it (pending if the group requires approval).
 4. Approvals: approvers get a queue of pending members and pending prayers with Approve / Edit / Decline.
 5. Answered prayer: approvers move a prayer to Praise; it leaves prayer time but stays in the Praise tab.
 6. Urgent and timed prayers: a request can be marked urgent (push to the group once it's live) and/or carry a "pray at" time (a "Pray now" push at that time, sent up to 2 hours late). Urgent prayers sort first and show an Urgent badge.
@@ -115,19 +113,10 @@ Build order: auth + groups/invites, then lists/prayers, then prayer time, then r
 - Phase 3 (sign-in, create/join group, approver queue for members, owner role management, require-approval setting): built in app/app.js.
 - Phase 4 (lists view with All / each list / Praise tabs, prayer detail with "I prayed", "Prayed Nx" totals, prayer time): built in app/app.js.
   Prayer time details: lists order by prayers.created_at (oldest first); Praise orders by answered_at (newest first). Advancing marks the card being left as prayed; when time runs out the card on screen also counts; ending early doesn't count the card on screen. After the whole stack is prayed it reshuffles and continues. Chime is Web Audio (G5 then C5), unlocked on the Begin tap for iOS. Screen Wake Lock is held while running and re-requested when the app returns to the foreground.
-- Phase 5 (request a prayer with a drafted, editable prayer; approver queue with Approve / Edit / Decline; mark answered / move back / remove; approvers manage lists in the Group tab): built.
+- Phase 5 (request a prayer; approver queue with Approve / Edit / Decline; mark answered / move back / remove; approvers manage lists in the Group tab): built.
   Declining a request or removing a prayer sets status 'removed' (kept, hidden from members). Approvers and owners post directly; members post directly only when require_approval is off. The Prayers tab shows approvers a "Waiting for approval" queue (badge on the tab); members see their own pending requests.
-  Template when drafting is unavailable: "Heavenly Father,\n\nWe lift up <who> to You today. <need>. Surround them with Your peace, give them strength for each day, and let them know they are not alone.\n\nIn Jesus' name, Amen."
 - Phase 7 (urgent and pray-at pushes, daily prayer reminders, ownership transfer): built and live (migrations pushed, VAPID secrets set, send-notifications deployed).
-- Next: Phase 6 (one-time import of the group's lists; script and data never committed).
-
-## Prayer style
-
-    Heavenly Father,
-
-    We lift up <person> to You today. <2 to 4 sentences, specific to the need.>
-
-    In Jesus' name, Amen.
+- Phase 6 (one-time import of the group's lists): done. 5 lists and 144 prayers loaded; the import script and data were never committed and have been deleted.
 
 ## Design
 

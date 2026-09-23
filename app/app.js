@@ -809,28 +809,8 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Request a prayer: who / what's going on / your name, then an editable draft
+  // Request a prayer: who, what to pray for, your name, list, urgent / pray-at time
   // ---------------------------------------------------------------------------
-
-  // The fallback prayer when the drafting service isn't available (CLAUDE.md "Prayer style").
-  function templatePrayer(who, need) {
-    var n = need.trim().replace(/\s+/g, ' ');
-    if (n && !/[.!?]$/.test(n)) n += '.';
-    return 'Heavenly Father,\n\nWe lift up ' + who + ' to You today. ' + (n ? n + ' ' : '') +
-      'Surround them with Your peace, give them strength for each day, and let them know they are not alone.\n\nIn Jesus\' name, Amen.';
-  }
-
-  function draftPrayer(g, who, need) {
-    var timeout = new Promise(function (_, reject) { setTimeout(function () { reject(new Error('timeout')); }, 30000); });
-    var call = sb.functions.invoke('draft-prayer', { body: { group_id: g.group_id, who: who, need: need } })
-      .then(function (res) {
-        if (res.error || !res.data || !res.data.body) throw res.error || new Error('no draft');
-        return { title: res.data.title || who, body: res.data.body, drafted: true };
-      });
-    return Promise.race([call, timeout]).catch(function () {
-      return { title: who, body: templatePrayer(who, need), drafted: false };
-    });
-  }
 
   function listSelect(id, selected) {
     if (!pdata.lists.length) return null;
@@ -849,24 +829,23 @@
       h('main', { class: 'reader-body' }, h('h1', { text: title }), children)));
   }
 
-  function showRequest(g, prev) {
-    prev = prev || {};
+  function showRequest(g) {
     var err = h('p', { class: 'error', role: 'alert' });
-    var who = h('input', { type: 'text', id: 'req-who', maxlength: '100', required: true, value: prev.who || '', 'data-autofocus': true });
-    var need = h('textarea', { id: 'req-need', rows: '5', maxlength: '1500', required: true });
-    need.value = prev.need || '';
-    var name = h('input', { type: 'text', id: 'req-name', maxlength: '80', autocomplete: 'name', value: prev.name != null ? prev.name : '' });
-    var lists = listSelect('req-list', prev.list_id || (listTab !== 'all' && listTab !== 'praise' ? listTab : ''));
-    var urgency = urgencyFields('req', prev.urgent, prev.pray_at);
-    var draft = h('button', { class: 'btn block', type: 'submit', text: 'Draft my prayer' });
+    var who = h('input', { type: 'text', id: 'req-who', maxlength: '120', required: true, 'data-autofocus': true });
+    var need = h('textarea', { id: 'req-need', rows: '6', maxlength: '4000', required: true });
+    var name = h('input', { type: 'text', id: 'req-name', maxlength: '80', autocomplete: 'name' });
+    var lists = listSelect('req-list', listTab !== 'all' && listTab !== 'praise' ? listTab : '');
+    var urgency = urgencyFields('req');
+    var direct = isApprover(g) || g.require_approval === false;
+    var submit = h('button', { class: 'btn block', type: 'submit', text: direct ? 'Post prayer' : 'Send for approval' });
     var form = h('form', { class: 'card', novalidate: true },
       h('div', { class: 'field' },
         h('label', { for: 'req-who', text: 'Who is this prayer for?' },
           h('span', { class: 'hint', text: 'A first name is fine, like "my brother Sam".' })),
         who),
       h('div', { class: 'field' },
-        h('label', { for: 'req-need', text: 'What\'s going on?' },
-          h('span', { class: 'hint', text: 'Share what you\'re comfortable with. Your group will see the prayer, not this note.' })),
+        h('label', { for: 'req-need', text: 'What should we pray for?' },
+          h('span', { class: 'hint', text: 'Your group will see this. Share what you\'re comfortable with.' })),
         need),
       h('div', { class: 'field' },
         h('label', { for: 'req-name', text: 'Your name (optional)' },
@@ -874,66 +853,35 @@
         name),
       lists,
       urgency.el,
-      draft,
-      err);
-    form.addEventListener('submit', busy(draft, err, function () {
-      var w = who.value.trim().replace(/\s+/g, ' ');
-      var u = urgency.read();
-      if (u.pray_at && new Date(u.pray_at).getTime() < Date.now() - 60000) throw new Error('Choose a pray-at time that hasn\'t passed yet.');
-      var n = need.value.trim();
-      if (!w) throw new Error('Say who this prayer is for.');
-      if (!n) throw new Error('Share a little about what\'s going on.');
-      draft.textContent = 'Writing a prayer…';
-      var info = { who: w, need: n, name: name.value.trim(), list_id: lists ? lists.querySelector('select').value : '', urgent: u.urgent, pray_at: u.pray_at };
-      return draftPrayer(g, w, n).then(function (d) { showDraft(g, info, d); });
-    }));
-    readerShell(g, 'Request a prayer', [
-      h('p', { class: 'lede', text: 'Tell us who needs prayer. Upheld will draft a prayer you can edit before you send it.' }),
-      form]);
-  }
-
-  // The requester reviews and edits the draft, then submits it.
-  function showDraft(g, info, d) {
-    var err = h('p', { class: 'error', role: 'alert' });
-    var title = h('input', { type: 'text', id: 'draft-title', maxlength: '120', required: true, value: d.title });
-    var body = h('textarea', { id: 'draft-body', class: 'prayer-edit', rows: '10', maxlength: '4000', required: true });
-    body.value = d.body;
-    var direct = isApprover(g) || g.require_approval === false;
-    var submit = h('button', { class: 'btn block', type: 'submit', text: direct ? 'Post prayer' : 'Send for approval' });
-    var form = h('form', { class: 'card', novalidate: true },
-      h('div', { class: 'field' }, h('label', { for: 'draft-title', text: 'Title' }), title),
-      h('div', { class: 'field' }, h('label', { for: 'draft-body', text: 'Prayer' }), body),
       submit,
       err);
     form.addEventListener('submit', busy(submit, err, function () {
-      var t = title.value.trim().replace(/\s+/g, ' ');
-      var b = body.value.trim();
-      if (!t) throw new Error('Add a title.');
-      if (!b) throw new Error('The prayer can\'t be empty.');
+      var w = who.value.trim().replace(/\s+/g, ' ');
+      var n = need.value.trim();
+      if (!w) throw new Error('Say who this prayer is for.');
+      if (!n) throw new Error('Say what we should pray for.');
+      var u = urgency.read();
+      if (u.pray_at && new Date(u.pray_at).getTime() < Date.now() - 60000) throw new Error('Choose a pray-at time that hasn\'t passed yet.');
       submit.textContent = 'Sending…';
       return sb.from('prayers').insert({
         group_id: g.group_id,
-        list_id: info.list_id || null,
-        title: t,
-        body: b,
+        list_id: (lists && lists.querySelector('select').value) || null,
+        title: w,
+        body: n,
         status: direct ? 'active' : 'pending',
         requested_by: state.user.id,
-        requester_name: info.name || null,
-        urgent: !!info.urgent,
-        pray_at: info.pray_at || null
+        requester_name: name.value.trim() || null,
+        urgent: u.urgent,
+        pray_at: u.pray_at
       }).then(must).then(function () {
         toast(direct ? 'Posted. Your group can pray for this now.' : 'Sent. An approver will review it soon.');
         state.tab = 'prayers';
         showGroup(g);
       });
     }));
-    readerShell(g, 'Review your prayer', [
-      d.drafted
-        ? h('p', { class: 'lede', text: 'Here\'s a draft. Change anything you like.' })
-        : h('div', { class: 'notice' }, h('p', { text: 'The prayer writer isn\'t available right now, so here\'s a simple starting point. Edit it however you like.' })),
-      form,
-      h('button', { class: 'btn quiet', type: 'button', text: 'Start over', onclick: function () { showRequest(g, info); } })
-    ], function () { showRequest(g, info); });
+    readerShell(g, 'Request a prayer', [
+      h('p', { class: 'lede', text: direct ? 'Tell your group who needs prayer and what to pray for.' : 'Tell your group who needs prayer and what to pray for. An approver will review it first.' }),
+      form]);
   }
 
   // Approvers edit a prayer (pending, active, or answered). Pending ones can be saved and approved at once.
@@ -949,8 +897,8 @@
     var save = h('button', { class: 'btn block', type: 'submit', text: isPending ? 'Save and approve' : 'Save' });
     var saveOnly = isPending ? h('button', { class: 'btn block secondary', type: 'button', text: 'Save without approving' }) : null;
     var form = h('form', { class: 'card stack', novalidate: true },
-      h('div', { class: 'field' }, h('label', { for: 'edit-title', text: 'Title' }), title),
-      h('div', { class: 'field' }, h('label', { for: 'edit-body', text: 'Prayer' }), body),
+      h('div', { class: 'field' }, h('label', { for: 'edit-title', text: 'Who is this prayer for?' }), title),
+      h('div', { class: 'field' }, h('label', { for: 'edit-body', text: 'What should we pray for?' }), body),
       lists,
       urgency.el,
       h('div', { class: 'field' }, h('label', { for: 'edit-name', text: 'Requested by (optional)' }), name),
@@ -959,7 +907,7 @@
       err);
     function changes(approve) {
       var t = title.value.trim().replace(/\s+/g, ' ');
-      if (!t) throw new Error('Add a title.');
+      if (!t) throw new Error('Say who this prayer is for.');
       var c = { title: t, body: body.value.trim(), requester_name: name.value.trim() || null };
       if (lists) c.list_id = lists.querySelector('select').value || null;
       var u = urgency.read();
