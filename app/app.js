@@ -1551,6 +1551,7 @@
     }
 
     function draw(sub) {
+      current = sub || null;
       var on = !!sub && Notification.permission === 'granted';
       if (Notification.permission === 'denied') {
         status.textContent = 'Notifications are blocked for Upheld. Turn them on in your phone\'s Settings, under Notifications.';
@@ -1564,27 +1565,36 @@
       drawPrefs(on);
     }
 
-    toggleBtn.addEventListener('click', busy(toggleBtn, err, function () {
-      return currentSubscription().then(function (sub) {
-        if (sub && Notification.permission === 'granted') {
-          return sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint).then(must)
-            .then(function () { return sub.unsubscribe(); })
-            .then(function () { toast('Notifications off for this phone.'); draw(null); });
-        }
-        return Notification.requestPermission().then(function (perm) {
-          if (perm !== 'granted') { draw(null); throw new Error('Notifications weren\'t allowed.'); }
-          return navigator.serviceWorker.ready;
-        }).then(function (reg) {
-          return reg.pushManager.getSubscription().then(function (existing) {
-            return existing || reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKey() });
-          });
+    // iPhone only allows pushManager.subscribe() while it is still handling the tap, so the
+    // registration is fetched ahead of time and subscribe() is called before anything else waits.
+    var swReg = null, current = null;
+    navigator.serviceWorker.ready.then(function (reg) { swReg = reg; });
+
+    var turnOff = busy(toggleBtn, err, function () {
+      var sub = current;
+      return sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint).then(must)
+        .then(function () { return sub.unsubscribe(); })
+        .then(function () { toast('Notifications off for this phone.'); draw(null); });
+    });
+
+    toggleBtn.addEventListener('click', function (ev) {
+      if (current && Notification.permission === 'granted') return turnOff(ev);
+      var pending = swReg
+        ? swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKey() })
+        : Promise.reject(new Error('Upheld is still starting up. Try again in a moment.'));
+      pending.catch(function () {});
+      busy(toggleBtn, err, function () {
+        return pending.catch(function (e) {
+          draw(null);
+          if (Notification.permission === 'denied') throw new Error('Notifications are blocked for Upheld. Turn them on in your phone\'s Settings, under Notifications.');
+          throw e && /denied|not allowed/i.test(e.message || '') ? new Error('Notifications weren\'t allowed. Tap "Turn on notifications" again and choose Allow.') : e;
         }).then(function (newSub) {
           var j = newSub.toJSON();
           return sb.rpc('save_push_subscription', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth }).then(must)
             .then(function () { toast('Notifications are on.'); draw(newSub); });
         });
-      });
-    }));
+      })(ev);
+    });
 
     status.textContent = 'Checking…';
     Promise.all([
