@@ -5,5 +5,5 @@ window.UPHELD_CONFIG = {
   supabaseKey: 'sb_publishable_BeFA87mKNJf756tWM-u6PA_BwX190JU',
   // Public half of the web push (VAPID) key pair. The private half is the Supabase secret VAPID_PRIVATE_KEY.
   // Empty until notifications are set up; the app then shows "Notifications aren't switched on yet."
-  vapidPublicKey: ''
+  vapidPublicKey: 'BHfR__g0xX91znsp4D5KEG9HPplVhGCesF1WEDF0cArUHXW6QP-fsJdKbRA3CaB2hsMJGcwlnIYdcCGPB7F3qeg'
 };
