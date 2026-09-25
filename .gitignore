@@ -6,6 +6,9 @@ data/
 exports/
 import/
 scripts/import*
+*.tar.gz
+*.dump
+Upheld Backups/
 
 # Secrets
 .env
