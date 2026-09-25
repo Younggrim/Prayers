@@ -597,6 +597,58 @@ select pg_temp.expect_count('reminder pushes go to that person''s phones',
 reset role;
 
 -- ---------------------------------------------------------------------------
+-- Lists members can add to
+-- ---------------------------------------------------------------------------
+
+insert into ids values ('closed_list', gen_random_uuid());
+select pg_temp.act_as('owner');
+select pg_temp.expect_ok('the owner can add a list that members cannot add to',
+  format($q$insert into public.lists (id, group_id, name, sort_order, members_can_add) values (%L, %L, 'Sample Closed List', 2, false)$q$,
+         pg_temp.id('closed_list'), pg_temp.id('group')));
+reset role;
+
+select pg_temp.act_as('member');
+select pg_temp.expect_blocked('a member cannot request into a closed list',
+  format($q$insert into public.prayers (group_id, list_id, title, body, status, requested_by)
+            values (%L, %L, 'Sample Closed', 'Sample text.', 'pending', %L)$q$,
+         pg_temp.id('group'), pg_temp.id('closed_list'), pg_temp.id('member')));
+select pg_temp.expect_blocked('a member cannot skip the list once some lists are closed',
+  format($q$insert into public.prayers (group_id, list_id, title, body, status, requested_by)
+            values (%L, null, 'Sample No List', 'Sample text.', 'pending', %L)$q$,
+         pg_temp.id('group'), pg_temp.id('member')));
+select pg_temp.expect_ok('a member can still request into an open list',
+  format($q$insert into public.prayers (group_id, list_id, title, body, status, requested_by)
+            values (%L, %L, 'Sample Open', 'Sample text.', 'pending', %L)$q$,
+         pg_temp.id('group'), pg_temp.id('list'), pg_temp.id('member')));
+select pg_temp.expect_blocked('a member cannot open a closed list',
+  format($q$update public.lists set members_can_add = true where id = %L$q$, pg_temp.id('closed_list')));
+select pg_temp.expect_blocked('a member still cannot edit prayers',
+  format($q$update public.prayers set body = 'changed' where id = %L$q$, pg_temp.id('active_prayer')));
+reset role;
+
+select pg_temp.act_as('approver');
+select pg_temp.expect_ok('an approver can add to a closed list',
+  format($q$insert into public.prayers (group_id, list_id, title, body, status, requested_by)
+            values (%L, %L, 'Sample Closed', 'Sample text.', 'active', %L)$q$,
+         pg_temp.id('group'), pg_temp.id('closed_list'), pg_temp.id('approver')));
+reset role;
+
+select pg_temp.act_as('owner');
+select pg_temp.expect_ok('the owner can open a list to members',
+  format($q$update public.lists set members_can_add = true where id = %L$q$, pg_temp.id('closed_list')));
+reset role;
+select pg_temp.act_as('member');
+select pg_temp.expect_ok('with every list open, a member can request without a list',
+  format($q$insert into public.prayers (group_id, list_id, title, body, status, requested_by)
+            values (%L, null, 'Sample No List', 'Sample text.', 'pending', %L)$q$,
+         pg_temp.id('group'), pg_temp.id('member')));
+reset role;
+select pg_temp.act_as('anon');
+select pg_temp.expect_blocked('signed-out visitors cannot call member_can_post_to()',
+  format('select public.member_can_post_to(%L, null)', pg_temp.id('group')));
+reset role;
+
+-- ---------------------------------------------------------------------------
 -- Ownership transfer
 -- ---------------------------------------------------------------------------
 
