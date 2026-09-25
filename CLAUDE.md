@@ -55,7 +55,7 @@ Per group, in group_members.role:
 
 - owner: created the group (or received it by transfer). Everything an approver can do, plus choose approvers, rename or delete the group, remove anyone, and transfer ownership to another active member.
 - approver: approves or declines join requests; approves, edits, or declines new prayer requests; marks prayers answered; removes prayers.
-- member: sees approved prayers, runs prayer time, taps "I prayed", submits requests.
+- member: sees approved prayers, runs prayer time, taps "I prayed", submits requests (only into lists open to members).
 
 Each group has require_approval (default true). When false, member requests post directly.
 
@@ -64,7 +64,7 @@ Each group has require_approval (default true). When false, member requests post
     profiles        id (= auth.users.id), display_name, created_at
     groups          id, name, description, require_approval bool, invite_code (unique), created_by, created_at
     group_members   group_id, user_id, role ('owner'|'approver'|'member'), status ('pending'|'active'), created_at
-    lists           id, group_id, name, sort_order
+    lists           id, group_id, name, sort_order, members_can_add bool (default true)
     prayers         id, group_id, list_id, title, body, status ('pending'|'active'|'answered'|'removed'),
                     requested_by, approved_by, created_at, answered_at, requester_name (optional "Requested by"),
                     urgent bool, pray_at timestamptz, urgent_notified_at, pray_at_notified_at
@@ -77,7 +77,7 @@ RLS:
 
 - A user sees a group, its lists, and its active/answered prayers only if they are an active member.
 - Pending prayers are visible to their requester and to the group's approvers and owner.
-- Members insert prayers as pending (or active when require_approval is false). Only approvers/owner change status.
+- Members insert prayers as pending (or active when require_approval is false), and only into lists with members_can_add; with no list only while every list in the group is open. Approvers/owner add to any list. Only approvers/owner edit prayers or change status.
 - Joining: a user with a valid invite_code inserts a pending membership; approvers/owner activate it.
 - Users insert and delete only their own prayed_marks.
 - Users see and delete only their own push_subscriptions (added via save_push_subscription()), and read/write only their own notification_settings. Nobody but the sender sets the *_notified_at stamps or reminder_last_sent.
@@ -91,6 +91,7 @@ Server functions (SECURITY DEFINER, signed-in users only):
 - my_groups(): the caller's groups, including pending ones (name and status only). Invite codes go only to approvers/owner.
 - group_roster(group_id): names, roles, and statuses. Members see active people; approvers/owner also see pending join requests.
 - transfer_ownership(group_id, new_owner): owner only; the new owner must be an active member; the old owner becomes an approver. The role guard allows owner changes only inside this function.
+- member_can_post_to(group_id, list_id): used by the prayers insert policy (see RLS above).
 - save_push_subscription(endpoint, p256dh, auth): registers this phone for the caller (a shared phone moves to whoever turned notifications on last).
 - Service role only (sender): claim_due_notifications(), claim_due_reminders(), push_targets(group_id, kind), push_targets_for_users(ids).
 
@@ -100,7 +101,7 @@ Triggers enforce what policies can't: only the owner changes roles (never to or 
 
 1. Lists by tab: All, each list, and Praise. Tap a prayer to open its full text and tap "I prayed". Show "Prayed 3x" totals.
 2. Prayer time: pick a length (3, 5, 10, 15, 20, 30 min) and which lists. Shuffle into one stack; one prayer on screen at a time; tap the card or "Next prayer" to advance (each advance counts as prayed). Countdown ring, Pause, End. Keep the screen awake (Wake Lock API). Soft two-note chime at the end, then "Amen" with how many were prayed for.
-3. Request a prayer: one form with who it's for (saved as the title), what to pray for (the body), your name (optional), list, urgent, and pray-at time. Submit posts it (pending if the group requires approval).
+3. Request a prayer: one form with who it's for (saved as the title), what to pray for (the body), your name (optional), list, urgent, and pray-at time. Submit posts it (pending if the group requires approval). Members only see lists open to them; approvers set "Members can add prayers here" per list in the Group tab.
 4. Approvals: approvers get a queue of pending members and pending prayers with Approve / Edit / Decline.
 5. Answered prayer: approvers move a prayer to Praise; it leaves prayer time but stays in the Praise tab.
 6. Urgent and timed prayers: a request can be marked urgent (push to the group once it's live) and/or carry a "pray at" time (a "Pray now" push at that time, sent up to 2 hours late). Urgent prayers sort first and show an Urgent badge.

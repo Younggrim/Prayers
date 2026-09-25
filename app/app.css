@@ -548,3 +548,5 @@ input[type="datetime-local"]:focus, input[type="time"]:focus { outline: 2px soli
   * { transition: none !important; animation: none !important; }
 }
 .check-line { font-size: 13px; margin-top: 14px; }
+.list-row .members-add { flex: 1 1 100%; border-top: 0; padding: 2px 0 0; gap: 10px; }
+.list-row .members-add input { width: 20px; height: 20px; }

@@ -521,7 +521,7 @@
 
   function loadPrayerData(g) {
     return Promise.all([
-      sb.from('lists').select('id, name, sort_order').eq('group_id', g.group_id)
+      sb.from('lists').select('id, name, sort_order, members_can_add').eq('group_id', g.group_id)
         .order('sort_order', { ascending: true }).order('name', { ascending: true }).then(must),
       sb.from('prayers').select('id, list_id, title, body, status, created_at, answered_at, requested_by, requester_name, urgent, pray_at')
         .eq('group_id', g.group_id).in('status', ['pending', 'active', 'answered'])
@@ -812,11 +812,18 @@
   // Request a prayer: who, what to pray for, your name, list, urgent / pray-at time
   // ---------------------------------------------------------------------------
 
-  function listSelect(id, selected) {
-    if (!pdata.lists.length) return null;
+  // Members may only add to lists open to them; once any list is closed they must pick an open one.
+  function memberLists() { return pdata.lists.filter(function (l) { return l.members_can_add !== false; }); }
+  function listsRestricted() { return pdata.lists.some(function (l) { return l.members_can_add === false; }); }
+
+  function listSelect(id, selected, membersOnly) {
+    var lists = membersOnly ? memberLists() : pdata.lists;
+    if (!lists.length) return null;
+    var noList = !(membersOnly && listsRestricted());
+    if (!noList && !lists.some(function (l) { return l.id === selected; })) selected = lists[0].id;
     var sel = h('select', { id: id },
-      h('option', { value: '', text: 'No list' }),
-      pdata.lists.map(function (l) {
+      noList ? h('option', { value: '', text: 'No list' }) : null,
+      lists.map(function (l) {
         return h('option', { value: l.id, text: l.name, selected: l.id === selected });
       }));
     return h('div', { class: 'field' }, h('label', { for: id, text: 'List' }), sel);
@@ -834,7 +841,13 @@
     var who = h('input', { type: 'text', id: 'req-who', maxlength: '120', required: true, 'data-autofocus': true });
     var need = h('textarea', { id: 'req-need', rows: '6', maxlength: '4000', required: true });
     var name = h('input', { type: 'text', id: 'req-name', maxlength: '80', autocomplete: 'name' });
-    var lists = listSelect('req-list', listTab !== 'all' && listTab !== 'praise' ? listTab : '');
+    var member = !isApprover(g);
+    if (member && listsRestricted() && !memberLists().length) {
+      readerShell(g, 'Request a prayer', [
+        h('div', { class: 'card empty-state' }, h('p', { text: 'In this group, only approvers add prayers right now. Ask one of them to add your request.' }))]);
+      return;
+    }
+    var lists = listSelect('req-list', listTab !== 'all' && listTab !== 'praise' ? listTab : '', member);
     var urgency = urgencyFields('req');
     var direct = isApprover(g) || g.require_approval === false;
     var submit = h('button', { class: 'btn block', type: 'submit', text: direct ? 'Post prayer' : 'Send for approval' });
@@ -1695,7 +1708,7 @@
     var lists = [];
 
     function load() {
-      return sb.from('lists').select('id, name, sort_order').eq('group_id', g.group_id)
+      return sb.from('lists').select('id, name, sort_order, members_can_add').eq('group_id', g.group_id)
         .order('sort_order', { ascending: true }).order('name', { ascending: true }).then(must)
         .then(function (rows) { lists = rows || []; draw(); });
     }
@@ -1729,9 +1742,18 @@
           if (!confirm('Delete the list "' + l.name + '"? Its prayers stay and still show under All.')) return;
           return sb.from('lists').delete().eq('id', l.id).select().then(mustChange).then(load);
         }));
+        var open = h('input', { type: 'checkbox', id: 'members-add-' + l.id, checked: l.members_can_add !== false });
+        open.addEventListener('change', busy(open, err, function () {
+          var v = open.checked;
+          return sb.from('lists').update({ members_can_add: v }).eq('id', l.id).select().then(mustChange)
+            .then(function () { toast(v ? 'Members can add to ' + l.name + '.' : 'Only approvers can add to ' + l.name + '.'); return load(); })
+            .catch(function (e) { open.checked = !v; throw e; });
+        }));
         return h('li', { class: 'person list-row' },
           h('div', { class: 'person-name', text: l.name }),
-          h('div', { class: 'list-actions' }, up, rename, del));
+          h('div', { class: 'list-actions' }, up, rename, del),
+          h('label', { class: 'check-row members-add', for: 'members-add-' + l.id }, open,
+            h('span', { class: 'person-meta', text: 'Members can add prayers here' })));
       }));
     }
     form.addEventListener('submit', busy(add, err, function () {
@@ -1744,7 +1766,7 @@
     load().catch(function (e) { err.textContent = friendlyError(e); });
     return h('section', { class: 'card' },
       h('h2', { text: 'Prayer lists' }),
-      h('p', { class: 'hint', text: 'Lists are the tabs on the Prayers screen, like Health or Family.' }),
+      h('p', { class: 'hint', text: 'Lists are the tabs on the Prayers screen, like Health or Family. Members can only add prayers to lists marked "Members can add"; approvers can add to any list, and only approvers edit prayers.' }),
       ul, form, err);
   }
 
