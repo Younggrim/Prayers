@@ -23,6 +23,8 @@ Owner: Jeremy McAdoo. Repo: Younggrim/Prayers. Live site: https://upheld.macdwel
     supabase/migrations/    SQL migrations (apply with: supabase db push)
     supabase/functions/     Edge Function: send-notifications (supabase functions deploy send-notifications --no-verify-jwt)
     supabase/tests/         RLS privacy tests (rls_privacy_test.sql); scripts/test-rls-local.sh runs them on a throwaway Postgres
+    scripts/backup/         Weekly Mac backup: install-mac.sh (one-time setup, launchd Sundays 8 PM, password in Keychain)
+                            and upheld-backup.sh (pg_dump of public + auth users to ~/Upheld Backups, keeps 12)
 
 ## Landing page
 
